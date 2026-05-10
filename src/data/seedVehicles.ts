@@ -1,58 +1,60 @@
-import type { VehicleSpecs } from "@/lib/vehicleTypes";
+type SeedVehicle = {
+  make: string;
+  model: string;
+  year: number;
+  trim?: string;
 
-export const seedVehicles: VehicleSpecs[] = [
+  horsepower: number;
+  torqueLbFt: number;
+  weightKg: number;
+  drivetrain?: string;
+  dragCoefficient: number;
+
+  benchmarkZeroToSixty?: number;
+  benchmarkTopSpeedMph?: number;
+
+  source: "NHTSA" | "User Input";
+  confidence: number;
+  notes: string[];
+};
+
+export const seedVehicles: SeedVehicle[] = [
   {
-    name: "2020 Lamborghini Huracan Evo",
-    year: 2020,
     make: "Lamborghini",
-    model: "Huracan Evo",
+    model: "Huracan EVO",
+    year: 2020,
+    trim: "EVO",
     horsepower: 631,
+    torqueLbFt: 443,
     weightKg: 1422,
+    drivetrain: "AWD",
     dragCoefficient: 0.39,
-    frontalAreaM2: 2.0,
-    drivetrainLoss: 0.15,
-    tireGrip: 1.15,
     benchmarkZeroToSixty: 2.9,
     benchmarkTopSpeedMph: 202,
-    source: "seed",
+    source: "User Input",
     confidence: 0.88,
     notes: [
       "Seed vehicle used for reliable demo testing.",
-      "Cd/frontal area are engineering estimates.",
+      "Specs are intended for simulation demonstration, not official certification.",
     ],
   },
   {
-    name: "2022 Toyota GR86",
-    year: 2022,
-    make: "Toyota",
-    model: "GR86",
-    horsepower: 228,
-    weightKg: 1275,
-    dragCoefficient: 0.27,
-    frontalAreaM2: 2.1,
-    drivetrainLoss: 0.15,
-    tireGrip: 0.95,
-    benchmarkZeroToSixty: 6.1,
-    benchmarkTopSpeedMph: 140,
-    source: "seed",
-    confidence: 0.84,
-    notes: ["Seed vehicle used for validation testing."],
-  },
-  {
-    name: "2023 Tesla Model 3 Performance",
-    year: 2023,
-    make: "Tesla",
-    model: "Model 3 Performance",
-    horsepower: 450,
-    weightKg: 1850,
-    dragCoefficient: 0.23,
-    frontalAreaM2: 2.22,
-    drivetrainLoss: 0.08,
-    tireGrip: 1.1,
-    benchmarkZeroToSixty: 3.1,
-    benchmarkTopSpeedMph: 162,
-    source: "seed",
+    make: "Mercedes-Benz",
+    model: "C240 4MATIC",
+    year: 2005,
+    trim: "C240 4MATIC",
+    horsepower: 168,
+    torqueLbFt: 177,
+    weightKg: 1625,
+    drivetrain: "AWD",
+    dragCoefficient: 0.29,
+    benchmarkZeroToSixty: 8.5,
+    benchmarkTopSpeedMph: 137,
+    source: "User Input",
     confidence: 0.82,
-    notes: ["EV horsepower is approximate."],
+    notes: [
+      "Seed vehicle used for testing year/make/model search behavior.",
+      "Performance values are estimated for demo simulation.",
+    ],
   },
 ];

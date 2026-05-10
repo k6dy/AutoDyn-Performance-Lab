@@ -36,38 +36,15 @@ function estimateWeightKg(horsepower: number, make: string, model: string) {
   return 1300;
 }
 
-function estimateZeroToSixty(horsepower: number, weightKg: number, tireGrip: number) {
-  const powerToWeight = horsepower / weightKg;
-  const raw = 9.8 / Math.max(powerToWeight * tireGrip * 8, 0.1);
-
-  return Number(Math.max(2.4, Math.min(raw, 12)).toFixed(1));
-}
-
-function estimateTopSpeed(
-  horsepower: number,
-  dragCoefficient: number,
-  frontalAreaM2: number
-) {
-  const airDensity = 1.225;
-  const powerWatts = horsepower * 745.7 * 0.85;
-
-  const speedMs = Math.pow(
-    (2 * powerWatts) / (airDensity * dragCoefficient * frontalAreaM2),
-    1 / 3
-  );
-
-  return Number((speedMs * 2.23694).toFixed(0));
-}
-
 export function buildEstimatedVehicle(query: string): VehicleSpecs {
   const cleaned = query.trim();
 
   const yearMatch = cleaned.match(/\b(19|20)\d{2}\b/);
-  const year = yearMatch ? Number(yearMatch[0]) : undefined;
+  const year = yearMatch ? Number(yearMatch[0]) : new Date().getFullYear();
 
   const words = cleaned.replace(/\b(19|20)\d{2}\b/, "").trim().split(" ");
 
-  const make = words[0] ?? "Unknown";
+  const make = words[0] || "Unknown";
   const model = words.slice(1).join(" ") || "Unknown Model";
 
   const lower = cleaned.toLowerCase();
@@ -99,28 +76,21 @@ export function buildEstimatedVehicle(query: string): VehicleSpecs {
   const frontalAreaM2 = estimateFrontalArea(make, model);
 
   return {
-    name: year ? `${year} ${make} ${model}` : `${make} ${model}`,
     year,
     make,
     model,
     horsepower,
+    modifiedHorsepower: horsepower,
     weightKg,
     dragCoefficient,
     frontalAreaM2,
     drivetrainLoss,
     tireGrip,
-    benchmarkZeroToSixty: estimateZeroToSixty(horsepower, weightKg, tireGrip),
-    benchmarkTopSpeedMph: estimateTopSpeed(
-      horsepower,
-      dragCoefficient,
-      frontalAreaM2
-    ),
-    source: "estimated",
-    confidence: 0.45,
+    source: "User Input",
     notes: [
       "Vehicle was generated from estimator fallback.",
       "Use exact trim/year for better results.",
       "Some values are estimated because free APIs often lack full performance data.",
     ],
   };
-}
+};
