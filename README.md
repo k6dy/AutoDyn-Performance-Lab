@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AutoDyn Performance Lab 2.0
 
-## Getting Started
+Vehicle performance analysis with sourced specifications, a deterministic physics engine and an optional AI build assistant.
 
-First, run the development server:
+- **Manual Setup** — pick a vehicle (year → make → model → trim), decode a VIN, or define a custom vehicle; edit specifications for a Stock and a Modified scenario.
+- **AI Build Assistant** — describe a vehicle or build in plain language. Gemini interprets the request into a *proposal*; nothing changes until you press **Apply to simulation**.
+- **Results** — one shared workspace for both modes: metrics with uncertainty ranges, Stock vs. Modified deltas, charts, deterministic engineering analysis, provenance, and JSON/CSV/print export.
+
+Both modes feed the **same** physics engine (`src/lib/physics`). The AI never produces performance numbers or vehicle specifications.
+
+## Architecture
+
+| Layer | Location | Notes |
+|---|---|---|
+| Vehicle data | `src/lib/vehicles`, `src/data/vehicle-index.json` | CarAPI dataset (2015–2020 US trims) + NHTSA vPIC (identification any year, VIN decode). Every value carries provenance: **Verified / User-provided / Estimated / Unavailable**. |
+| Scenario state | `src/lib/domain`, `src/state` | SI units internally. Modified = Stock + overrides (Stock is never mutated). Pure reducer with revision-based staleness. |
+| Physics | `src/lib/physics` | Resolver fills missing inputs with labeled estimates → time-step simulation → uncertainty band, sensitivity, mass sweep, change attribution. |
+| AI interpretation | `src/lib/ai`, `src/app/api/assistant` | Server-only Gemini call with JSON-schema output, zod validation, vehicle resolution against the dataset, numeric guard, rate limits. |
+| Presentation | `src/components` | Manual Setup, AI Build Assistant, Results. |
+
+### Physics model (summary)
+
+Longitudinal point-mass model on a level road: synthesized full-load torque curve that preserves rated peak power and torque at their rpm points; gear-by-gear wheel force with drivetrain efficiency; traction limit μ·N on the driven axle with load transfer (h/L); aerodynamic drag ½ρC<sub>d</sub>Av² with air density from temperature and elevation; rolling resistance; rotational-inertia mass factor; optimal-force upshifts with torque interruption; clutch/torque-converter launch. Electric vehicles use constant torque → constant power through a single reduction. Hybrids use combined system output (labeled limitation).
+
+Outputs: 0–60 mph, 0–100 km/h, 0–100 mph, quarter-mile ET/trap, 50–70 mph, peak g, traction-limited share, theoretical top speed — each with an indicative range from input uncertainty. Peak power and curb mass are required; AutoDyn never guesses them.
+
+## Environment variables
+
+See `.env.example`. All are optional — without them the app is fully functional and the assistant shows *"AI assistance is temporarily unavailable. Manual Setup is still ready to use."*
+
+| Variable | Purpose |
+|---|---|
+| `GEMINI_API_KEY` | Server-side Gemini key. Create it in Google AI Studio in a project **without billing** so usage can only ever be free tier. |
+| `GEMINI_MODEL` | Default `gemini-3.5-flash-lite` (free tier at time of writing). |
+| `AI_MAX_OUTPUT_TOKENS`, `AI_TIMEOUT_MS` | Per-request output cap (default 1024) and timeout (default 15 s). |
+| `AI_RATE_LIMIT_PER_MINUTE`, `AI_RATE_LIMIT_PER_DAY`, `AI_GLOBAL_DAILY_LIMIT` | Defaults 5 / 40 per client, 300 global per day. |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Optional persistent rate limiting across serverless instances. |
+
+**Rate-limit tradeoff:** without Upstash the limiter is in-memory per server instance — on Vercel that is best-effort, not global. The real cost guarantee is the billing-free Gemini project (requests beyond the free quota fail with 429, which the app handles).
+
+## Scripts
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run build       # production build
+npm run check       # typecheck + lint + tests
+npm test            # vitest (no network, no API key; Gemini is mocked)
+npm run data:build  # regenerate src/data/vehicle-index.json from src/data/carapi/*.csv
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Limitations
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Results are theoretical estimates, not guarantees of real-world performance and not guidance for high-speed driving. AutoDyn does not assess durability, safety, emissions compliance or road legality of modifications. Speed limiters, launch/traction control and tire slip curves are not modeled.
