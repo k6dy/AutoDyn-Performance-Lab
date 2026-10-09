@@ -2,16 +2,34 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { buildAssistantContext } from "@/lib/ai/context";
-import type { AssistantResponse } from "@/lib/ai/types";
-import { AI_LIMITS, AI_UNAVAILABLE_MESSAGE } from "@/lib/ai/types";
+import type { AssistantErrorCode, AssistantResponse, AssistantStatus, DeploymentInfo, ProviderCode } from "@/lib/ai/types";
+import { AI_LIMITS, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { configSchema, specSetSchema } from "@/lib/domain/configSchema";
 import type { AnalysisConfig, SpecSet } from "@/lib/domain/types";
 import { runAnalysis } from "@/lib/physics/analysis";
 import { initialState, isStale, reducer, type Action, type AppState, type ChatMessage } from "@/state/reducer";
 
-const STORAGE_KEY = "autodyn:v2";
+// v3: earlier builds could persist arbitrary manual test values; they are not restored.
+const STORAGE_KEY = "autodyn:v3";
 
-type AiStatus = "checking" | "available" | "unavailable";
+export type AiStatus = {
+  /** checking: request in flight · ready: provider verified · untested: configured, not yet probed · unavailable: cannot be used. */
+  phase: "checking" | "ready" | "untested" | "unavailable" | "degraded";
+  code: ProviderCode | null;
+  model: string | null;
+  deployment: DeploymentInfo | null;
+  checkedAt: string | null;
+};
+
+const PROVIDER_CODES: ProviderCode[] = ["not_configured", "invalid_key", "model_unavailable", "quota", "timeout", "network", "server_error", "request_rejected", "invalid_output"];
+
+function statusFrom(s: AssistantStatus): AiStatus {
+  const base = { model: s.model, deployment: s.deployment, checkedAt: s.provider?.checkedAt ?? null };
+  if (!s.configured) return { ...base, phase: "unavailable", code: "not_configured" };
+  if (!s.provider) return { ...base, phase: "untested", code: null };
+  if (s.provider.status === "ok") return { ...base, phase: "ready", code: null };
+  return { ...base, phase: isBlocking(s.provider.status) ? "unavailable" : "degraded", code: s.provider.status };
+}
 
 type Ctx = {
   state: AppState;
@@ -20,7 +38,8 @@ type Ctx = {
   running: boolean;
   runAnalysisNow: (navigate?: boolean) => void;
   aiStatus: AiStatus;
-  sendMessage: (text: string) => void;
+  checkConnection: () => void;
+  sendMessage: (text: string, opts?: { detail?: boolean }) => void;
 };
 
 const AppContext = createContext<Ctx | null>(null);
@@ -41,7 +60,7 @@ function readStorage(): Extract<Action, { type: "hydrate" }>["state"] | null {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (data?.version !== 2) return null;
+    if (data?.version !== 3) return null;
     const config = configSchema.safeParse(data.config);
     if (!config.success) return null;
     const baseline = data.baseline ? specSetSchema.safeParse(data.baseline) : null;
@@ -64,7 +83,7 @@ function readStorage(): Extract<Action, { type: "hydrate" }>["state"] | null {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const [aiStatus, setAiStatus] = useState<AiStatus>("checking");
+  const [aiStatus, setAiStatus] = useState<AiStatus>({ phase: "checking", code: null, model: null, deployment: null, checkedAt: null });
   const hydrated = useRef(false);
   const inflight = useRef(false);
 
@@ -82,7 +101,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         window.localStorage.setItem(
           STORAGE_KEY,
           JSON.stringify({
-            version: 2,
+            version: 3,
             config: state.config,
             baseline: state.baseline,
             units: state.ui.units,
@@ -96,18 +115,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(t);
   }, [state.config, state.baseline, state.ui.units, state.chat.messages]);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/assistant", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => !cancelled && setAiStatus(d?.available ? "available" : "unavailable"))
-      .catch(() => !cancelled && setAiStatus("unavailable"));
-    return () => {
-      cancelled = true;
-    };
+  const loadStatus = useCallback((probe: boolean) => {
+    return fetch(probe ? "/api/assistant/health?probe=1" : "/api/assistant", { cache: "no-store", signal: AbortSignal.timeout(20000) })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        setAiStatus(statusFrom((await r.json()) as AssistantStatus));
+      })
+      .catch(() => setAiStatus((s) => ({ ...s, phase: "degraded", code: "network" })));
   }, []);
 
-  const runAnalysisNow = useCallback((navigate = true) => dispatch({ type: "requestRun", navigate }), []);
+  useEffect(() => {
+    loadStatus(false);
+  }, [loadStatus]);
+
+  const checkConnection = useCallback(() => {
+    setAiStatus((s) => ({ ...s, phase: "checking" }));
+    loadStatus(true);
+  }, [loadStatus]);
+
+  const runAnalysisNow = useCallback((navigate = true) => dispatch({ type: "requestRun", navigate, source: "manual" }), []);
 
   // Runs the deterministic engine for the revision that was requested, after the state commits.
   const { runRequest, config } = state;
@@ -124,7 +150,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(t);
   }, [runRequest, config]);
 
-  const sendMessage = useCallback((text: string) => {
+  const sendMessage = useCallback((text: string, opts?: { detail?: boolean }) => {
     const s = state;
     const message = text.trim();
     if (!message || s.chat.pending || inflight.current || message.length > AI_LIMITS.maxMessageChars) return;
@@ -141,6 +167,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const finish = (body: AssistantResponse) => {
       inflight.current = false;
       if (body.ok) {
+        setAiStatus((st) => ({ ...st, phase: "ready", code: null, checkedAt: new Date().toISOString() }));
         dispatch({
           type: "chatReceive",
           requestId: id,
@@ -163,7 +190,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           proposal: null,
           message: { id: `a-${id}`, role: "assistant", text: body.message, createdAt: Date.now(), errorCode: body.code },
         });
-        if (body.code === "ai_unavailable") setAiStatus("unavailable");
+        if ((PROVIDER_CODES as string[]).includes(body.code) && body.code !== "invalid_output") {
+          const code = body.code as ProviderCode;
+          setAiStatus((st) => ({ ...st, phase: isBlocking(code) ? "unavailable" : "degraded", code, checkedAt: new Date().toISOString() }));
+        }
       }
     };
 
@@ -172,20 +202,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetch("/api/assistant", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: id, message, history, context }),
+      body: JSON.stringify({ requestId: id, message, history, context, detail: !!opts?.detail }),
       signal: controller.signal,
     })
       .then(async (r) => {
         const body = (await r.json().catch(() => null)) as AssistantResponse | null;
-        finish(body && typeof body === "object" && "ok" in body ? body : { ok: false, code: "provider_error", message: AI_UNAVAILABLE_MESSAGE });
+        finish(body && typeof body === "object" && "ok" in body ? body : { ok: false, code: "server_error", message: PROVIDER_MESSAGES.server_error });
       })
-      .catch(() => finish({ ok: false, code: controller.signal.aborted ? "timeout" : "provider_error", message: AI_UNAVAILABLE_MESSAGE }))
+      .catch(() => {
+        const code: AssistantErrorCode = controller.signal.aborted ? "timeout" : "network";
+        finish({ ok: false, code, message: PROVIDER_MESSAGES[code] });
+      })
       .finally(() => window.clearTimeout(timer));
   }, [state]);
 
   const value = useMemo<Ctx>(
-    () => ({ state, dispatch, stale: isStale(state), running: state.runRequest !== null, runAnalysisNow, aiStatus, sendMessage }),
-    [state, runAnalysisNow, aiStatus, sendMessage],
+    () => ({ state, dispatch, stale: isStale(state), running: state.runRequest !== null, runAnalysisNow, aiStatus, checkConnection, sendMessage }),
+    [state, runAnalysisNow, aiStatus, checkConnection, sendMessage],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

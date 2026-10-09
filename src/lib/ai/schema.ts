@@ -44,6 +44,8 @@ export const requestSchema = z
       .array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().max(AI_LIMITS.maxHistoryChars) }))
       .max(AI_LIMITS.maxHistoryTurns),
     context: contextSchema,
+    /** User asked for a detailed explanation rather than the concise default. */
+    detail: z.boolean().optional(),
   })
   .strict();
 
@@ -54,14 +56,13 @@ export type AssistantRequest = z.infer<typeof requestSchema>;
 export const modelOutputSchema = z.object({
   intent: z.enum(AI_INTENTS),
   reply: z.string().max(4000),
-  vehicle: z
-    .object({
-      year: z.number().int().nullable(),
-      make: z.string().max(60).nullable(),
-      model: z.string().max(80).nullable(),
-      trim: z.string().max(120).nullable(),
-    })
-    .nullable(),
+  vehicle: z.object({
+    mentioned: z.boolean(),
+    year: z.number().int().nullable(),
+    make: z.string().max(60).nullable(),
+    model: z.string().max(80).nullable(),
+    trim: z.string().max(120).nullable(),
+  }),
   useCurrentVehicle: z.boolean(),
   changes: z
     .array(
@@ -88,17 +89,18 @@ export const modelOutputJsonSchema = {
   type: "object",
   properties: {
     intent: { type: "string", enum: [...AI_INTENTS], description: "What the user wants." },
-    reply: { type: "string", description: "Concise plain-text answer (no markdown tables, no HTML). Max ~150 words." },
+    reply: { type: "string", description: "Concise plain-text answer (no markdown tables, no HTML)." },
     vehicle: {
-      type: ["object", "null"],
-      description: "Vehicle the user explicitly named in this message; null if none or if they mean the current vehicle.",
+      type: "object",
+      description: "Vehicle the user explicitly named in this message. mentioned=false if none or if they mean the current vehicle.",
       properties: {
+        mentioned: { type: "boolean" },
         year: { type: ["integer", "null"] },
         make: { type: ["string", "null"] },
         model: { type: ["string", "null"] },
         trim: { type: ["string", "null"] },
       },
-      required: ["year", "make", "model", "trim"],
+      required: ["mentioned", "year", "make", "model", "trim"],
     },
     useCurrentVehicle: { type: "boolean", description: "True if the request refers to the vehicle already in CONTEXT." },
     changes: {

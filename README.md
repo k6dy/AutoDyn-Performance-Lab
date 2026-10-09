@@ -2,7 +2,7 @@
 
 Vehicle performance analysis with sourced specifications, a deterministic physics engine and an optional AI build assistant.
 
-- **Manual Setup** — pick a vehicle (year → make → model → trim), decode a VIN, or define a custom vehicle; edit specifications for a Stock and a Modified scenario.
+- **Manual Setup** — pick a vehicle (year → make → model → trim), decode a VIN, or enter one manually. Basic Setup needs only power and curb weight; simple controls describe a modification. Optional **Advanced Settings** expose every modeling assumption (aero, gearing, tires, conditions).
 - **AI Build Assistant** — describe a vehicle or build in plain language. Gemini interprets the request into a *proposal*; nothing changes until you press **Apply to simulation**.
 - **Results** — one shared workspace for both modes: metrics with uncertainty ranges, Stock vs. Modified deltas, charts, deterministic engineering analysis, provenance, and JSON/CSV/print export.
 
@@ -36,6 +36,12 @@ See `.env.example`. All are optional — without them the app is fully functiona
 | `AI_RATE_LIMIT_PER_MINUTE`, `AI_RATE_LIMIT_PER_DAY`, `AI_GLOBAL_DAILY_LIMIT` | Defaults 5 / 40 per client, 300 global per day. |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Optional persistent rate limiting across serverless instances. |
 
+### Checking the AI connection
+
+`GET /api/assistant/health?probe=1` makes one real, bounded Gemini request in the production request format and reports `configured`, `model`, the deployment's `environment / branch / commit`, and `provider.status`: `ok`, `not_configured`, `invalid_key`, `model_unavailable`, `quota`, `timeout`, `network`, `server_error`, `request_rejected` or `invalid_output`. The key is never returned; sanitized details are logged server-side as `[assistant] provider_error {...}`. The assistant runs this check automatically once per browser session (also via **Test connection**).
+
+Vercel applies environment-variable changes only to **new** deployments: after adding `GEMINI_API_KEY`, redeploy the latest `autodyn-v2` deployment (not `main`).
+
 **Rate-limit tradeoff:** without Upstash the limiter is in-memory per server instance — on Vercel that is best-effort, not global. The real cost guarantee is the billing-free Gemini project (requests beyond the free quota fail with 429, which the app handles).
 
 ## Scripts
@@ -44,6 +50,8 @@ See `.env.example`. All are optional — without them the app is fully functiona
 npm run build       # production build
 npm run check       # typecheck + lint + tests
 npm test            # vitest (no network, no API key; Gemini is mocked)
+npm run test:e2e    # real-browser layout checks (360/390 px) on the production build via installed Edge/Chrome
+npm run verify      # all of the above + production build
 npm run data:build  # regenerate src/data/vehicle-index.json from src/data/carapi/*.csv
 ```
 

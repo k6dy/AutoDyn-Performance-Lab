@@ -8,32 +8,47 @@ import { GET as modelsRoute } from "@/app/api/vehicles/models/route";
 import { GET as specRoute } from "@/app/api/vehicles/spec/route";
 import { GET as trimsRoute } from "@/app/api/vehicles/trims/route";
 import AppShell from "@/components/AppShell";
+import LoadingStage, { BrandGlyph } from "@/components/LoadingStage";
 import { handleAssistantRequest } from "@/lib/ai/handler";
 import { MemoryRateLimiter } from "@/lib/ai/rateLimit.server";
 import type { ModelOutput } from "@/lib/ai/schema";
+import { runAnalysis } from "@/lib/physics/analysis";
+import { datasetTrimToSpecSet } from "@/lib/vehicles/normalize";
 import { allDatasetTrims } from "@/lib/vehicles/dataset.server";
+import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { AppProvider } from "@/state/AppProvider";
 
 type Handler = (req: Request) => Promise<Response> | Response;
 
-let aiAvailable = true;
+let aiConfigured = true;
 let modelOutput: ModelOutput | null = null;
 let failNhtsa = false;
+let hangModels = false;
 let assistantCalls = 0;
+let reducedMotion = false;
 
+const deployment = { environment: "preview", branch: "autodyn-v2", commit: "abc1234" };
 const routes: Record<string, Handler> = {
   "/api/vehicles/makes": makesRoute,
   "/api/vehicles/models": async (req) => {
-    if (failNhtsa && !/year=20(1[5-9]|20)/.test(req.url)) return Response.json({ error: "NHTSA vPIC did not respond. Retry, or enter the vehicle as a custom vehicle.", retryable: true }, { status: 502 });
+    if (hangModels) return new Promise<Response>((_, reject) => req.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    if (failNhtsa && !/year=20(1[5-9]|20)/.test(req.url)) return Response.json({ error: "NHTSA vPIC did not respond.", retryable: true }, { status: 502 });
     return modelsRoute(req);
   },
   "/api/vehicles/trims": trimsRoute,
   "/api/vehicles/spec": specRoute,
+  "/api/assistant/health": async () =>
+    Response.json({
+      configured: aiConfigured,
+      model: "gemini-3.5-flash-lite",
+      deployment,
+      provider: aiConfigured ? { status: "ok", model: "gemini-3.5-flash-lite", checkedAt: new Date().toISOString(), latencyMs: 300, source: "probe" } : null,
+    }),
   "/api/assistant": async (req) => {
-    if (req.method === "GET") return Response.json({ available: aiAvailable, model: aiAvailable ? "test-model" : null });
+    if (req.method === "GET") return Response.json({ configured: aiConfigured, model: "gemini-3.5-flash-lite", deployment, provider: null });
     assistantCalls += 1;
     const result = await handleAssistantRequest(await req.json(), {
-      configured: aiAvailable,
+      configured: aiConfigured,
       timeoutMs: 1000,
       callModel: async () => ({ ok: true, text: JSON.stringify(modelOutput) }),
       limiter: new MemoryRateLimiter({ perMinute: 100, perDay: 100, globalPerDay: 100 }),
@@ -46,11 +61,14 @@ const routes: Record<string, Handler> = {
 };
 
 beforeEach(() => {
-  aiAvailable = true;
+  aiConfigured = true;
   modelOutput = null;
   failNhtsa = false;
+  hangModels = false;
   assistantCalls = 0;
+  reducedMotion = false;
   window.localStorage.clear();
+  window.sessionStorage.clear();
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -60,7 +78,7 @@ beforeEach(() => {
       return handler(new Request(url, init));
     }),
   );
-  window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as never;
+  window.matchMedia = ((q: string) => ({ matches: reducedMotion && q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} })) as never;
   globalThis.ResizeObserver = class {
     observe() {}
     unobserve() {}
@@ -77,6 +95,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -89,26 +108,31 @@ function renderApp() {
 }
 
 async function choose(id: string, predicate: (o: HTMLOptionElement) => boolean) {
-  const select = (await waitFor(() => {
-    const el = document.getElementById(id) as HTMLSelectElement;
-    if (el.disabled) throw new Error(`${id} not ready`);
-    if (![...el.options].some(predicate)) throw new Error(`${id} options not loaded`);
-    return el;
-  }, { timeout: 5000 })) as HTMLSelectElement;
-  const option = [...select.options].find(predicate)!;
-  fireEvent.change(select, { target: { value: option.value } });
+  const select = (await waitFor(
+    () => {
+      const el = document.getElementById(id) as HTMLSelectElement;
+      if (el.disabled) throw new Error(`${id} not ready`);
+      if (![...el.options].some(predicate)) throw new Error(`${id} options not loaded`);
+      return el;
+    },
+    { timeout: 5000 },
+  )) as HTMLSelectElement;
+  fireEvent.change(select, { target: { value: [...select.options].find(predicate)!.value } });
+}
+
+const runButton = () => screen.getAllByRole("button", { name: /Run analysis/ })[0];
+
+async function loadTrim(year: string, make: string, model: string, trim: (o: HTMLOptionElement) => boolean) {
+  await choose("sel-year", (o) => o.value === year);
+  await choose("sel-make", (o) => o.value === make);
+  await choose("sel-model", (o) => o.value === model);
+  await choose("sel-trim", trim);
 }
 
 async function loadC300() {
-  await choose("sel-year", (o) => o.value === "2015");
-  await choose("sel-make", (o) => o.value === "Mercedes-Benz");
-  await choose("sel-model", (o) => o.value === "C300");
-  await choose("sel-trim", (o) => /^C 300 4dr Sedan/.test(o.text) && /rear wheel drive/.test(o.text));
-  await screen.findAllByRole("button", { name: /Run analysis/ }, { timeout: 5000 });
+  await loadTrim("2015", "Mercedes-Benz", "C300", (o) => /^C 300 4dr Sedan/.test(o.text) && /rear wheel drive/.test(o.text));
+  await screen.findByText("Key specifications", undefined, { timeout: 5000 });
 }
-
-// The desktop run panel and the mobile run bar both render in jsdom (no CSS); use the panel's.
-const runButton = () => screen.getAllByRole("button", { name: /Run analysis/ })[0];
 
 function setField(id: string, value: string) {
   const input = document.getElementById(id) as HTMLInputElement;
@@ -117,99 +141,205 @@ function setField(id: string, value: string) {
   fireEvent.blur(input);
 }
 
-async function metricCell(label: RegExp) {
+async function metricRow(label: RegExp) {
   const table = await screen.findByRole("table", { name: /Computed performance metrics/ }, { timeout: 8000 });
   return within(table).getByRole("rowheader", { name: label }).closest("tr")!;
 }
 
-describe("workflow 1 & 2 — Manual Setup", () => {
-  it("Stock → Run analysis → Results with engine-computed values", async () => {
+const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
+const openAdvanced = () => fireEvent.click(screen.getByRole("button", { name: /Advanced Settings/ }));
+
+async function openAssistant() {
+  fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
+  const input = (await screen.findByLabelText(/Message the AI Build Assistant/)) as HTMLTextAreaElement;
+  await waitFor(() => expect(input.disabled).toBe(false));
+  return input;
+}
+
+describe("Basic Setup", () => {
+  it("runs a standard analysis without touching Advanced Settings; numbers come from the physics engine", async () => {
     renderApp();
     await loadC300();
-    expect((document.getElementById("f-peakPowerKw") as HTMLInputElement).value).toBe("241");
+    expect(fieldValue("f-peakPowerKw")).toBe("241");
+    expect(fieldValue("f-curbMassKg")).toBe("3417"); // dataset curb weight for this trim
+    expect(screen.getByRole("button", { name: /Advanced Settings/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById("f-dragCoefficient")).toBeNull(); // technical fields hidden by default
     fireEvent.click(runButton());
-    const row = await metricCell(/0–60 mph/);
-    expect(row.textContent).toMatch(/\d\.\d\d/);
+    const row = await metricRow(/0–60 mph/);
+    const trim = allDatasetTrims().find((t) => t.year === 2015 && t.model === "C300" && t.drive === "rear wheel drive" && /^C 300 4dr/.test(t.description ?? ""))!;
+    const expected = runAnalysis({ stock: datasetTrimToSpecSet(trim), modified: null, conditions: { ...DEFAULT_CONDITIONS } }).stock.metrics.zeroTo60S!;
+    expect(row.textContent).toContain(expected.toFixed(2));
     expect(screen.getByRole("tab", { name: /Results/ }).getAttribute("aria-selected")).toBe("true");
   });
 
-  it("Modified → Compare shows both scenarios and a difference; Stock is preserved", async () => {
+  it("simple modification controls create an independent Modified scenario", async () => {
     renderApp();
     await loadC300();
-    fireEvent.click(screen.getByRole("button", { name: /Create modified scenario/ }));
-    setField("f-peakPowerKw", "281");
-    setField("f-curbMassKg", "3399");
-    expect(screen.getByText(/Stock: 241 hp/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-peakPowerKw", "+40");
+    setField("d-curbMassKg", "-150");
+    expect(screen.getByText(/Modified: 281 hp · Stock: 241 hp/)).toBeTruthy();
+    expect(fieldValue("f-peakPowerKw")).toBe("241"); // stock untouched
     fireEvent.click(runButton());
-    const row = await metricCell(/Peak power/);
-    expect(row.textContent).toMatch(/241/);
-    expect(row.textContent).toMatch(/281/);
-    expect(row.textContent).toMatch(/\+40/);
-    const sixty = await metricCell(/0–60 mph/);
+    const power = await metricRow(/Peak power/);
+    expect(power.textContent).toMatch(/241[\s\S]*281[\s\S]*\+40/);
+    const sixty = await metricRow(/0–60 mph/);
     const cells = sixty.querySelectorAll("td");
     expect(cells).toHaveLength(3);
-    expect(cells[2].textContent).toMatch(/^−\d\.\d\d/); // modified is quicker
-    expect(cells[2].querySelector(".text-gain")).not.toBeNull();
+    expect(cells[2].textContent).toMatch(/^−\d\.\d\d/);
+  });
+
+  it("unit switching preserves the underlying physical values", async () => {
+    renderApp();
+    await loadC300();
+    fireEvent.click(screen.getByRole("radio", { name: "Metric" }));
+    expect(fieldValue("f-peakPowerKw")).toBe("180"); // 241 hp = 179.7 kW
+    expect(fieldValue("f-curbMassKg")).toBe("1550"); // 3417 lb
+    fireEvent.click(screen.getByRole("radio", { name: "Imperial" }));
+    expect(fieldValue("f-peakPowerKw")).toBe("241");
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
   });
 
   it("switching modes preserves inputs, and edits mark results out of date", async () => {
     renderApp();
     await loadC300();
     fireEvent.click(runButton());
-    await metricCell(/0–60 mph/);
+    await metricRow(/0–60 mph/);
     fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
     fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
-    expect((document.getElementById("f-peakPowerKw") as HTMLInputElement).value).toBe("241");
-    setField("f-tireMu", "1.1");
+    expect(fieldValue("f-peakPowerKw")).toBe("241");
+    setField("f-peakPowerKw", "250");
     fireEvent.click(screen.getByRole("tab", { name: /Results/ }));
     expect(await screen.findByText(/computed for an earlier configuration/)).toBeTruthy();
   });
 
-  it("keyboard arrows move between workspaces", async () => {
+  it("changing vehicle never carries specifications from the previous one", async () => {
     renderApp();
-    const manual = screen.getByRole("tab", { name: /Manual/ });
-    manual.focus();
-    fireEvent.keyDown(manual, { key: "ArrowRight" });
-    expect(screen.getByRole("tab", { name: /Assistant/ }).getAttribute("aria-selected")).toBe("true");
+    await loadC300();
+    setField("f-curbMassKg", "3000");
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-peakPowerKw", "+40");
+    await loadTrim("2018", "Toyota", "Camry", (o) => /^L 4dr Sedan/.test(o.text));
+    fireEvent.click(await screen.findByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(screen.getAllByText(/2018 Toyota Camry/).length).toBeGreaterThan(0));
+    const camry = allDatasetTrims().find((t) => t.year === 2018 && t.model === "Camry" && /^L 4dr Sedan/.test(t.description ?? ""))!;
+    expect(fieldValue("f-curbMassKg")).toBe(String(camry.curbWeightLb));
+    expect(fieldValue("f-peakPowerKw")).toBe(String(camry.hp));
+    expect(screen.getByRole("radio", { name: "Stock only" }).getAttribute("aria-checked")).toBe("true");
   });
 });
 
-describe("workflow 3 — AI Build Assistant", () => {
-  it("Describe → review proposal → Apply → simulate → Results (no change before Apply)", async () => {
+describe("Advanced Settings and validation", () => {
+  it("advanced overrides feed the same engine and are labeled user-provided", async () => {
+    renderApp();
+    await loadC300();
+    openAdvanced();
+    setField("f-dragCoefficient", "0.25");
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+    fireEvent.click(screen.getByRole("button", { name: /Inputs & provenance/ }));
+    const inputs = screen.getByRole("table", { name: /Simulation inputs/ });
+    const cd = within(inputs).getByRole("rowheader", { name: /Drag coefficient/ }).closest("tr")!;
+    expect(cd.textContent).toMatch(/0\.250/);
+    expect(cd.textContent).toMatch(/User/i);
+  });
+
+  it("blocks clearly invalid overrides and offers a one-click restore", async () => {
+    renderApp();
+    await loadC300();
+    openAdvanced();
+    setField("f-dragCoefficient", "423");
+    setField("f-drivetrainEfficiency", "12");
+    expect(runButton().hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/2 invalid values must be fixed/)).toBeTruthy();
+    const restoreButtons = () => {
+      const alert = screen.queryAllByRole("alert").find((el) => el.textContent?.includes("must be fixed"));
+      return alert ? within(alert).queryAllByRole("button", { name: /Use AutoDyn default/ }) : [];
+    };
+    expect(restoreButtons()).toHaveLength(2);
+    while (restoreButtons().length) fireEvent.click(restoreButtons()[0]);
+    await waitFor(() => expect(screen.getByText(/Ready — all inputs are valid/)).toBeTruthy());
+    expect(runButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("accepts percentages typed as fractions", async () => {
+    renderApp();
+    await loadC300();
+    openAdvanced();
+    setField("f-drivetrainEfficiency", "0.86");
+    expect(fieldValue("f-drivetrainEfficiency")).toBe("86");
+  });
+
+  it("extreme but possible values warn and require confirmation instead of blocking", async () => {
+    renderApp();
+    await loadC300();
+    setField("f-peakPowerKw", "1900");
+    setField("f-peakTorqueNm", "2000"); // consistent with 1,900 hp at this engine's 5,550 rpm power peak
+    expect(screen.queryByText(/must be fixed/)).toBeNull();
+    expect(screen.getByText(/unusual values? — allowed after you confirm/)).toBeTruthy();
+    expect(runButton().hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByLabelText(/want to simulate them as entered/));
+    expect(runButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("defaults to standard conditions and flags non-standard ones with a reset", async () => {
+    renderApp();
+    await loadC300();
+    expect(screen.getByText("Standard conditions")).toBeTruthy();
+    openAdvanced();
+    fireEvent.change(document.getElementById("c-surface")!, { target: { value: "snow" } });
+    expect(screen.getByText("Non-standard conditions")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reset to standard" }));
+    expect(screen.getByText("Standard conditions")).toBeTruthy();
+  });
+
+  it("does not restore state saved by earlier builds, and offers Start fresh for restored sessions", async () => {
+    window.localStorage.setItem("autodyn:v2", JSON.stringify({ version: 2, config: { bogus: true } }));
+    const { unmount } = renderApp();
+    expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    await loadC300();
+    await new Promise((r) => setTimeout(r, 400)); // persistence debounce
+    unmount();
+    renderApp();
+    expect(await screen.findByText(/Restored your previous session/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+  });
+});
+
+describe("AI Build Assistant", () => {
+  it("Describe → review → Apply runs the engine and posts computed results (nothing changes before Apply)", async () => {
     modelOutput = {
-      intent: "analyze_vehicle",
-      reply: "I found the 2015 C300 4MATIC in AutoDyn's dataset. Review and apply to run it.",
-      vehicle: { year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" },
+      intent: "compare",
+      reply: "Found the 2015 C300 4MATIC. Review the change.",
+      vehicle: { mentioned: true, year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" },
       useCurrentVehicle: false,
-      changes: [],
-      view: "stock",
+      changes: [{ scenario: "modified", field: "power", operation: "change", value: 40, unit: "hp", option: "", reason: "40 extra horsepower" }],
+      view: "compare",
       runSimulation: true,
       followUpQuestion: null,
     };
     renderApp();
-    fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
-    const input = await screen.findByLabelText(/Message the AI Build Assistant/);
-    await waitFor(() => expect((input as HTMLTextAreaElement).disabled).toBe(false));
-    fireEvent.change(input, { target: { value: "Analyze a stock 2015 Mercedes-Benz C300 4MATIC." } });
+    const input = await openAssistant();
+    expect(await screen.findByText("Connected")).toBeTruthy(); // probe route consulted
+    fireEvent.change(input, { target: { value: "Compare my stock 2015 C300 4MATIC with 40 extra horsepower." } });
     fireEvent.click(screen.getByRole("button", { name: /Send message/ }));
-    await screen.findAllByText(/found the 2015 C300 4MATIC/, undefined, { timeout: 5000 });
+    await screen.findAllByText(/Found the 2015 C300 4MATIC/, undefined, { timeout: 5000 });
     expect(assistantCalls).toBe(1);
-    // Nothing applied yet.
     expect(screen.getByText(/No vehicle yet/)).toBeTruthy();
-    const apply = screen.getAllByRole("button", { name: /Apply to simulation/ })[0];
-    fireEvent.click(apply);
-    await waitFor(() => expect(screen.queryByText(/No vehicle yet/)).toBeNull());
-    fireEvent.click(screen.getByRole("tab", { name: /Results/ }));
-    const row = await metricCell(/0–60 mph/);
-    expect(row.textContent).toMatch(/\d\.\d\d/);
-    expect(screen.getAllByText(/2015 Mercedes-Benz C300/).length).toBeGreaterThan(0);
+    expect(document.body.textContent).toMatch(/241 hp → 281 hp/);
+    fireEvent.click(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0]);
+    expect(await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: /View results/ })[0]);
+    const row = await metricRow(/Peak power/);
+    expect(row.textContent).toMatch(/241[\s\S]*281/);
   });
 
   it("Cancel discards a proposal without touching the configuration", async () => {
     modelOutput = {
       intent: "modify",
-      reply: "Proposed +40 hp.",
-      vehicle: null,
+      reply: "Prepared a +40 hp change.",
+      vehicle: { mentioned: false, year: null, make: null, model: null, trim: null },
       useCurrentVehicle: true,
       changes: [{ scenario: "modified", field: "power", operation: "change", value: 40, unit: "hp", option: "", reason: "40 more hp" }],
       view: "compare",
@@ -218,58 +348,131 @@ describe("workflow 3 — AI Build Assistant", () => {
     };
     renderApp();
     await loadC300();
-    fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
-    const input = await screen.findByLabelText(/Message the AI Build Assistant/);
-    await waitFor(() => expect((input as HTMLTextAreaElement).disabled).toBe(false));
+    const input = await openAssistant();
     fireEvent.change(input, { target: { value: "Add 40 hp" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    await screen.findAllByText(/Proposed \+40 hp/, undefined, { timeout: 5000 });
+    await screen.findAllByText(/Prepared a \+40 hp change/, undefined, { timeout: 5000 });
     fireEvent.click(screen.getAllByRole("button", { name: /^Cancel$/ })[0]);
     fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
-    expect(screen.getByRole("button", { name: /Create modified scenario/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Stock only" }).getAttribute("aria-checked")).toBe("true");
   });
-});
 
-describe("workflow 4 & 5 — fallbacks", () => {
-  it("AI unavailable → Manual Setup custom vehicle → successful simulation", async () => {
-    aiAvailable = false;
+  it("explains which data is missing for an unknown vehicle and routes to manual entry", async () => {
+    modelOutput = {
+      intent: "analyze_vehicle",
+      reply: "AutoDyn can't find verified specs for that model.",
+      vehicle: { mentioned: true, year: 2015, make: "Yugo", model: "GV", trim: null },
+      useCurrentVehicle: false,
+      changes: [],
+      view: "none",
+      runSimulation: false,
+      followUpQuestion: null,
+    };
+    renderApp();
+    const input = await openAssistant();
+    fireEvent.change(input, { target: { value: "Analyze a 2015 Yugo GV" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect((await screen.findAllByText(/peak power and curb weight/, undefined, { timeout: 5000 })).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole("button", { name: /Enter specifications manually/ })[0]);
+    expect(await screen.findByText("Key specifications")).toBeTruthy();
+    expect(screen.getAllByText(/Peak power is required/).length).toBeGreaterThan(0);
+  });
+
+  it("shows the specific reason when AI isn't configured, and Manual Setup still simulates", async () => {
+    aiConfigured = false;
     renderApp();
     fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
     expect(await screen.findByText("AI assistance is temporarily unavailable. Manual Setup is still ready to use.")).toBeTruthy();
+    expect(screen.getByText(/Reason: AI assistance isn't configured on this deployment/)).toBeTruthy();
+    expect(screen.getByText(/Deployment: preview · autodyn-v2 @ abc1234/)).toBeTruthy();
+    expect((screen.getByLabelText(/Message the AI Build Assistant/) as HTMLTextAreaElement).disabled).toBe(true);
     fireEvent.click(screen.getAllByRole("button", { name: /Open Manual Setup/ })[0]);
-    fireEvent.click(screen.getByRole("radio", { name: /Custom vehicle/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Enter manually/ }));
     fireEvent.change(screen.getByLabelText(/Vehicle name/), { target: { value: "Project car" } });
-    fireEvent.click(screen.getByRole("button", { name: /Create custom vehicle/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findAllByText(/Peak power is required/);
     setField("f-peakPowerKw", "300");
     setField("f-curbMassKg", "3200");
     fireEvent.change(document.getElementById("f-drivetrain")!, { target: { value: "RWD" } });
     fireEvent.click(runButton());
-    const row = await metricCell(/0–60 mph/);
-    expect(row.textContent).toMatch(/\d\.\d\d/);
+    expect((await metricRow(/0–60 mph/)).textContent).toMatch(/\d\.\d\d/);
   });
+});
 
-  it("vehicle lookup failure shows retry and a manual path that still simulates", async () => {
+describe("vehicle loading states", () => {
+  it("lookup failure shows a branded error with Retry and a direct manual path", async () => {
     failNhtsa = true;
     renderApp();
     await choose("sel-year", (o) => o.value === "2008");
     await choose("sel-make", (o) => o.value === "Honda");
-    expect(await screen.findByText(/did not respond/, undefined, { timeout: 5000 })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Retry/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole("radio", { name: /Custom vehicle/ }));
-    fireEvent.change(screen.getByLabelText(/Vehicle name/), { target: { value: "Honda Civic" } });
-    fireEvent.change(screen.getByLabelText(/Year \(optional\)/), { target: { value: "2008" } });
-    fireEvent.click(screen.getByRole("button", { name: /Create custom vehicle/ }));
+    const alert = await screen.findByRole("alert", undefined, { timeout: 5000 });
+    expect(alert.getAttribute("data-stage")).toBe("error");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Can't find it\? Enter the vehicle manually/ }));
+    expect((screen.getByLabelText(/Vehicle name/) as HTMLInputElement).value).toBe("Honda");
+    expect((screen.getByLabelText(/Year \(optional\)/) as HTMLInputElement).value).toBe("2008");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     setField("f-peakPowerKw", "140");
     setField("f-curbMassKg", "2700");
     fireEvent.change(document.getElementById("f-drivetrain")!, { target: { value: "FWD" } });
     fireEvent.click(runButton());
-    const row = await metricCell(/0–60 mph/);
-    expect(row.textContent).toMatch(/\d+\.\d\d/);
+    expect((await metricRow(/0–60 mph/)).textContent).toMatch(/\d+\.\d\d/);
+  });
+
+  it("shows the manufacturer loader during a real request and a timeout error afterwards", async () => {
+    hangModels = true;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderApp();
+    await choose("sel-year", (o) => o.value === "2015");
+    await choose("sel-make", (o) => o.value === "BMW");
+    const status = await screen.findByText("Finding BMW models");
+    expect(status.closest("[data-stage]")!.getAttribute("data-stage")).toBe("loading");
+    await act(async () => {
+      vi.advanceTimersByTime(12_500);
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/taking too long/);
+    hangModels = false;
+    fireEvent.click(within(alert).getByRole("button", { name: /Retry/ }));
+    await waitFor(() => expect((document.getElementById("sel-model") as HTMLSelectElement).options.length).toBeGreaterThan(5));
+  });
+
+  it("brand marks: real logo when available, typographic fallback otherwise, AutoDyn when unknown", async () => {
+    render(
+      <>
+        <BrandGlyph make="BMW" />
+        <BrandGlyph make="Mercedes-Benz" />
+        <BrandGlyph make={null} />
+      </>,
+    );
+    await waitFor(() => expect(document.querySelector('[data-brand="BMW"]')).not.toBeNull());
+    expect(document.querySelector('[data-brand="BMW"] path')!.getAttribute("d")!.length).toBeGreaterThan(50);
+    expect(document.querySelector('[data-brand-fallback="Mercedes-Benz"]')!.textContent).toBe("Mercedes-Benz");
+    expect(document.querySelector('[data-brand-fallback="AutoDyn"]')).not.toBeNull();
+  });
+
+  it("respects reduced motion (no spinning ring)", () => {
+    reducedMotion = true;
+    render(<LoadingStage make="Ford" label="Checking specifications" />);
+    const stage = screen.getByRole("status");
+    expect(stage.getAttribute("data-reduced-motion")).toBe("true");
+    expect(stage.querySelector(".animate-ring")).toBeNull();
+    cleanup();
+    reducedMotion = false;
+    render(<LoadingStage make="Ford" label="Checking specifications" />);
+    expect(screen.getByRole("status").querySelector(".animate-ring")).not.toBeNull();
   });
 });
 
 describe("rendering", () => {
+  it("keyboard arrows move between workspaces", () => {
+    renderApp();
+    const manual = screen.getByRole("tab", { name: /Manual/ });
+    manual.focus();
+    fireEvent.keyDown(manual, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: /Assistant/ }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("server-renders and hydrates without mismatches", async () => {
     const html = renderToString(
       <AppProvider>
@@ -283,11 +486,13 @@ describe("rendering", () => {
     const errors: unknown[] = [];
     const spy = vi.spyOn(console, "error").mockImplementation((...a) => errors.push(a));
     await act(async () => {
-      hydrateRoot(container, (
+      hydrateRoot(
+        container,
         <AppProvider>
           <AppShell />
-        </AppProvider>
-      ), { onRecoverableError: (e) => errors.push(e) });
+        </AppProvider>,
+        { onRecoverableError: (e) => errors.push(e) },
+      );
     });
     spy.mockRestore();
     expect(errors).toEqual([]);

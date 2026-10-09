@@ -2,6 +2,7 @@
 // changes) is unit-testable without rendering.
 
 import type { AssistantErrorCode, Proposal, SuggestedAction } from "@/lib/ai/types";
+import { resultsSummary } from "@/lib/analysis/summary";
 import { setModifiedValue, setStockValue } from "@/lib/domain/scenario";
 import type { AnalysisConfig, Conditions, ScenarioId, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
@@ -22,6 +23,8 @@ export type ChatMessage = {
   errorCode?: AssistantErrorCode;
   followUp?: string | null;
   suggestedAction?: SuggestedAction;
+  /** Deterministic results summary posted after an assistant-applied run. */
+  kind?: "results";
 };
 
 export type ProposalState = {
@@ -39,8 +42,10 @@ export type AppState = {
   revision: number;
   result: { analysis: AnalysisResult; revision: number } | null;
   /** Revision a run was requested for; the provider computes it after the state commits. */
-  runRequest: { revision: number; navigate: boolean } | null;
-  ui: { mode: Mode; editing: ScenarioId; view: ResultsView; units: UnitSystem; ackRevision: number | null };
+  runRequest: { revision: number; navigate: boolean; source: "manual" | "assistant" } | null;
+  /** True when the configuration was restored from a previous browser session. */
+  restored: boolean;
+  ui: { mode: Mode; editing: ScenarioId; view: ResultsView; units: UnitSystem; ackRevision: number | null; advancedOpen: boolean };
   chat: { messages: ChatMessage[]; proposals: Record<string, ProposalState>; pending: string | null };
 };
 
@@ -50,7 +55,8 @@ export const initialState: AppState = {
   revision: 0,
   result: null,
   runRequest: null,
-  ui: { mode: "manual", editing: "stock", view: "compare", units: "imperial", ackRevision: null },
+  restored: false,
+  ui: { mode: "manual", editing: "stock", view: "compare", units: "imperial", ackRevision: null, advancedOpen: false },
   chat: { messages: [], proposals: {}, pending: null },
 };
 
@@ -62,6 +68,10 @@ export type Action =
   | { type: "setModifiedValue"; key: SpecKey; value: SpecValues[SpecKey] }
   | { type: "resetField"; scenario: ScenarioId; key: SpecKey }
   | { type: "resetStock" }
+  | { type: "resetAll" }
+  | { type: "startFresh" }
+  | { type: "dismissRestored" }
+  | { type: "setAdvancedOpen"; open: boolean }
   | { type: "createModified" }
   | { type: "deleteModified" }
   | { type: "setConditions"; patch: Partial<Conditions> }
@@ -70,7 +80,7 @@ export type Action =
   | { type: "setView"; view: ResultsView }
   | { type: "setUnits"; units: UnitSystem }
   | { type: "ackWarnings" }
-  | { type: "requestRun"; navigate: boolean }
+  | { type: "requestRun"; navigate: boolean; source?: "manual" | "assistant" }
   | { type: "runComplete"; analysis: AnalysisResult; revision: number }
   | { type: "runFailed" }
   | { type: "chatSend"; message: ChatMessage }
@@ -96,6 +106,7 @@ export function reducer(state: AppState, action: Action): AppState {
         chat: { ...action.state.chat, pending: null },
         ui: { ...state.ui, units: action.state.units },
         revision: state.revision + 1,
+        restored: !!action.state.config.stock,
       };
     case "loadVehicle":
       return {
@@ -128,6 +139,18 @@ export function reducer(state: AppState, action: Action): AppState {
     case "resetStock":
       if (!state.baseline) return state;
       return withConfig(state, { ...state.config, stock: state.baseline });
+    case "resetAll":
+      // Back to the vehicle exactly as loaded from its source, no modified scenario, standard conditions.
+      return {
+        ...withConfig(state, { stock: state.baseline, modified: null, conditions: { ...DEFAULT_CONDITIONS } }),
+        ui: { ...state.ui, editing: "stock", ackRevision: null },
+      };
+    case "startFresh":
+      return { ...initialState, revision: state.revision + 1, ui: { ...initialState.ui, units: state.ui.units } };
+    case "dismissRestored":
+      return { ...state, restored: false };
+    case "setAdvancedOpen":
+      return { ...state, ui: { ...state.ui, advancedOpen: action.open } };
     case "createModified":
       if (!state.config.stock) return state;
       return {
@@ -151,15 +174,30 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, ui: { ...state.ui, ackRevision: state.revision } };
     case "requestRun":
       if (!state.config.stock || validateConfig(state.config).errors) return state;
-      return { ...state, runRequest: { revision: state.revision, navigate: action.navigate } };
+      return { ...state, runRequest: { revision: state.revision, navigate: action.navigate, source: action.source ?? "manual" } };
     case "runFailed":
       return { ...state, runRequest: null };
-    case "runComplete":
+    case "runComplete": {
       // Ignore results computed for an older configuration.
       if (action.revision !== state.revision) return { ...state, runRequest: null };
+      const fromAssistant = state.runRequest?.source === "assistant";
+      const messages = fromAssistant
+        ? [
+            ...state.chat.messages,
+            {
+              id: `r-${action.analysis.id}`,
+              role: "assistant" as const,
+              kind: "results" as const,
+              text: resultsSummary(action.analysis, state.ui.units),
+              createdAt: Date.now(),
+              suggestedAction: "open_results" as const,
+            },
+          ].slice(-60)
+        : state.chat.messages;
       return {
         ...state,
         runRequest: null,
+        chat: { ...state.chat, messages },
         result: { analysis: action.analysis, revision: action.revision },
         ui: {
           ...state.ui,
@@ -167,6 +205,7 @@ export function reducer(state: AppState, action: Action): AppState {
           view: action.analysis.modified ? (state.ui.view === "stock" ? "compare" : state.ui.view) : "stock",
         },
       };
+    }
     case "chatSend":
       if (state.chat.pending) return state; // duplicate submission guard
       return { ...state, chat: { ...state.chat, messages: [...state.chat.messages, action.message].slice(-60), pending: action.message.id } };

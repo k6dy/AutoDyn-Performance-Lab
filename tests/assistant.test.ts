@@ -16,7 +16,7 @@ import { c300, config } from "./support/fixtures";
 const baseOutput = (patch: Partial<ModelOutput> = {}): ModelOutput => ({
   intent: "modify",
   reply: "I can set that up for review.",
-  vehicle: null,
+  vehicle: { mentioned: false, year: null, make: null, model: null, trim: null },
   useCurrentVehicle: true,
   changes: [],
   view: "compare",
@@ -72,7 +72,7 @@ describe("assistant request pipeline", () => {
   });
 
   it("resolves a named vehicle from the dataset, never from the model", async () => {
-    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" } }));
+    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { mentioned: true, year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" } }));
     const body = await ok(request("Analyze a stock 2015 Mercedes-Benz C300 4MATIC.", { ...config(), stock: null }), deps(model));
     expect(body.proposal!.vehicle!.kind).toBe("load");
     if (body.proposal!.vehicle!.kind === "load") {
@@ -82,19 +82,19 @@ describe("assistant request pipeline", () => {
   });
 
   it("asks a follow-up when the vehicle is ambiguous", async () => {
-    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { year: null, make: "Mercedes-Benz", model: "C300", trim: null } }));
+    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { mentioned: true, year: null, make: "Mercedes-Benz", model: "C300", trim: null } }));
     const body = await ok(request("Analyze a Mercedes C300"), deps(model));
     expect(body.followUpQuestion).toMatch(/year/i);
   });
 
   it("offers trim choices when specifications differ", async () => {
-    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { year: 2015, make: "Mercedes-Benz", model: "C300", trim: null } }));
+    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { mentioned: true, year: 2015, make: "Mercedes-Benz", model: "C300", trim: null } }));
     const body = await ok(request("Analyze a 2015 C300"), deps(model));
     expect(body.proposal!.vehicle!.kind).toBe("choose");
   });
 
   it("identifies out-of-dataset vehicles via NHTSA without inventing specifications", async () => {
-    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { year: 2008, make: "Honda", model: "Civic", trim: null } }));
+    const model = respond(baseOutput({ intent: "analyze_vehicle", useCurrentVehicle: false, vehicle: { mentioned: true, year: 2008, make: "Honda", model: "Civic", trim: null } }));
     const body = await ok(request("Analyze a 2008 Honda Civic"), deps(model, { nhtsaModels: async () => ["Accord", "Civic"] }));
     const v = body.proposal!.vehicle!;
     expect(v.kind).toBe("identify");
@@ -140,13 +140,20 @@ describe("assistant request pipeline", () => {
 
   it("handles missing API key, network failure, timeout and quota without throwing", async () => {
     const never = vi.fn();
-    expect((await handleAssistantRequest(request("hi"), deps(never, { configured: false }))).body).toMatchObject({ ok: false, code: "ai_unavailable" });
+    expect((await handleAssistantRequest(request("hi"), deps(never, { configured: false }))).body).toMatchObject({ ok: false, code: "not_configured" });
     expect(never).not.toHaveBeenCalled();
 
-    const network = vi.fn(async () => {
-      throw new TypeError("fetch failed");
+    const network = vi.fn(async () => ({ ok: false as const, code: "network" as const }));
+    expect(await handleAssistantRequest(request("hi"), deps(network))).toMatchObject({ status: 502, body: { ok: false, code: "network" } });
+    const thrown = vi.fn(async () => {
+      throw new Error("unexpected");
     });
-    expect((await handleAssistantRequest(request("hi"), deps(network))).body).toMatchObject({ ok: false, code: "provider_error" });
+    expect((await handleAssistantRequest(request("hi"), deps(thrown))).body).toMatchObject({ ok: false, code: "server_error" });
+    for (const code of ["invalid_key", "model_unavailable", "request_rejected"] as const) {
+      const r = await handleAssistantRequest(request("hi"), deps(vi.fn(async () => ({ ok: false as const, code }))));
+      expect(r.body).toMatchObject({ ok: false, code });
+      expect((r.body as { message: string }).message).not.toMatch(/AIza|key=/);
+    }
 
     const hang = vi.fn(() => new Promise<never>(() => {}));
     const t = await handleAssistantRequest(request("hi"), deps(hang, { timeoutMs: 50 }));

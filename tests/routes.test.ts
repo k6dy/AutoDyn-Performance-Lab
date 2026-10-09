@@ -62,7 +62,7 @@ describe("assistant API route", () => {
     vi.stubEnv("GEMINI_API_KEY", "");
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
-    expect(await (await assistantStatus()).json()).toEqual({ available: false, model: null });
+    expect(await (await assistantStatus()).json()).toMatchObject({ configured: false, model: "gemini-3.5-flash-lite", provider: null, deployment: { environment: "local" } });
     const res = await assistantPost(
       new Request("http://test/api/assistant", {
         method: "POST",
@@ -71,7 +71,7 @@ describe("assistant API route", () => {
       }),
     );
     expect(res.status).toBe(503);
-    expect((await res.json()).message).toBe("AI assistance is temporarily unavailable. Manual Setup is still ready to use.");
+    expect(await res.json()).toMatchObject({ code: "not_configured" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -85,7 +85,7 @@ describe("assistant API route", () => {
     vi.stubEnv("GEMINI_API_KEY", "secret-test-key-123");
     const text = await (await assistantStatus()).text();
     expect(text).not.toMatch(/secret-test-key/);
-    expect(JSON.parse(text).available).toBe(true);
+    expect(JSON.parse(text).configured).toBe(true);
   });
 });
 

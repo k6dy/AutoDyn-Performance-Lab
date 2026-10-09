@@ -5,7 +5,7 @@ import { buildContents } from "@/lib/ai/prompt";
 import { buildChanges, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposal";
 import { modelOutputSchema, requestSchema, type AssistantRequest } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
-import { AI_LIMITS, AI_UNAVAILABLE_MESSAGE } from "@/lib/ai/types";
+import { AI_LIMITS, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
@@ -23,32 +23,24 @@ export type AssistantDeps = {
 
 type Result = { status: number; body: AssistantResponse };
 
-const MESSAGES: Record<AssistantErrorCode, string> = {
-  ai_unavailable: AI_UNAVAILABLE_MESSAGE,
-  rate_limited: "You're sending requests quickly. Please wait a moment and try again.",
-  quota: `The free AI quota is exhausted for now. ${AI_UNAVAILABLE_MESSAGE}`,
-  timeout: `The AI provider took too long to respond. ${AI_UNAVAILABLE_MESSAGE}`,
-  invalid_request: "That request could not be processed.",
-  message_too_long: `Messages are limited to ${AI_LIMITS.maxMessageChars} characters.`,
-  invalid_output: "The AI returned a response AutoDyn could not validate, so it was discarded. Please rephrase or use Manual Setup.",
-  duplicate: "This message was already sent.",
-  provider_error: AI_UNAVAILABLE_MESSAGE,
-};
-
 const STATUS: Record<AssistantErrorCode, number> = {
-  ai_unavailable: 503,
-  rate_limited: 429,
+  not_configured: 503,
+  invalid_key: 503,
+  model_unavailable: 503,
+  request_rejected: 502,
   quota: 429,
+  rate_limited: 429,
   timeout: 504,
+  network: 502,
+  server_error: 502,
+  invalid_output: 502,
   invalid_request: 400,
   message_too_long: 413,
-  invalid_output: 502,
   duplicate: 409,
-  provider_error: 502,
 };
 
 function fail(code: AssistantErrorCode, requestId?: string, retryAfterS?: number): Result {
-  return { status: STATUS[code], body: { ok: false, code, message: MESSAGES[code], requestId, retryAfterS } };
+  return { status: STATUS[code], body: { ok: false, code, message: PROVIDER_MESSAGES[code], requestId, retryAfterS } };
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -75,6 +67,7 @@ async function resolveVehicle(q: VehicleQuery, deps: AssistantDeps): Promise<{ p
       proposal: {
         kind: "choose",
         label,
+        make: match.candidates[0].make,
         note: match.question,
         candidates: match.candidates.map((t: DatasetTrim) => ({ trimId: t.id, label: `${candidateLabel(t)} · ${t.hp ?? "?"} hp · ${t.drive ?? "drive n/a"}` })),
       },
@@ -94,16 +87,28 @@ async function resolveVehicle(q: VehicleQuery, deps: AssistantDeps): Promise<{ p
           trim: q.trim ?? null,
           source: "nhtsa",
           sourceDetail: "NHTSA vPIC (identification only)",
-          notes: ["NHTSA confirms this model exists but does not provide performance specifications. Enter power and curb mass to simulate."],
+          notes: ["NHTSA confirms this model exists but does not provide performance specifications. Enter power and curb weight to simulate."],
         });
-        return { proposal: { kind: "identify", label: vehicleLabel(specSet.identity), specSet, note: `${match.reason} NHTSA confirms the model; specifications must be entered manually.` }, question: null };
+        return {
+          proposal: {
+            kind: "identify",
+            label: vehicleLabel(specSet.identity),
+            specSet,
+            note: `NHTSA confirms the ${q.year} ${q.make} ${hit} exists, but AutoDyn has no verified performance data for it. Missing: peak power and curb weight (required), torque (optional). Enter them in Manual Setup to analyze it.`,
+          },
+          question: null,
+        };
       }
     } catch {
       // Provider failure falls through to not_found with an honest note.
     }
   }
   return {
-    proposal: { kind: "not_found", label, note: `${match.reason} You can still analyze it as a custom vehicle by entering its specifications in Manual Setup.` },
+    proposal: {
+      kind: "not_found",
+      label,
+      note: `${match.reason} AutoDyn can still analyze it as a custom vehicle — you'll need its peak power and curb weight (torque optional).`,
+    },
     question: null,
   };
 }
@@ -118,7 +123,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   const req: AssistantRequest = parsed.data;
   if (JSON.stringify(req.context).length > AI_LIMITS.maxContextChars) return fail("invalid_request", req.requestId);
 
-  if (!deps.configured) return fail("ai_unavailable", req.requestId);
+  if (!deps.configured) return fail("not_configured", req.requestId);
   if (!(await deps.limiter.claim(req.requestId))) return fail("duplicate", req.requestId);
   const limit = await deps.limiter.check(deps.clientKey);
   if (!limit.allowed) return fail(limit.scope === "global" ? "quota" : "rate_limited", req.requestId, limit.retryAfterS);
@@ -132,7 +137,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
       new Promise<ModelCallResult>((resolve) => controller.signal.addEventListener("abort", () => resolve({ ok: false, code: "timeout" }))),
     ]);
   } catch {
-    call = { ok: false, code: "provider_error" };
+    call = { ok: false, code: "server_error" };
   } finally {
     clearTimeout(timer);
   }
@@ -150,7 +155,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
 
   let followUp = output.followUpQuestion ? sanitizeReply(output.followUpQuestion).slice(0, 300) : null;
   let vehicle: VehicleProposal | null = null;
-  if (output.vehicle && !output.useCurrentVehicle) {
+  if (output.vehicle.mentioned && !output.useCurrentVehicle) {
     const r = await resolveVehicle(output.vehicle, deps);
     vehicle = r.proposal;
     followUp = followUp ?? r.question;

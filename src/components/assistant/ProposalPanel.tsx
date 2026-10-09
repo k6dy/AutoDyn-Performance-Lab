@@ -1,21 +1,22 @@
 "use client";
 
-import { Check, Pencil, X } from "lucide-react";
+import { Check, PencilLine, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { IssueList } from "@/components/manual/ManualSetup";
-import { Button, cx, Notice, ProvenanceTag, Spinner } from "@/components/ui";
+import LoadingStage from "@/components/LoadingStage";
+import { Button, cx, Notice, ProvenanceTag } from "@/components/ui";
 import { applyProposal, evaluateProposal, proposalVehicle } from "@/lib/ai/apply";
 import type { ProposedChange } from "@/lib/ai/types";
 import { NUMERIC_FIELDS, SPEC_LABEL, SURFACE_OPTIONS } from "@/lib/domain/fields";
 import type { NumericSpecKey, SpecKey, SpecSet } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
 import { fromDisplay, toDisplay, unitLabel, type Quantity, type UnitSystem } from "@/lib/units";
-import { vehicleLabel } from "@/lib/vehicles/normalize";
+import { customSpecSet, vehicleLabel } from "@/lib/vehicles/normalize";
 import { useApp } from "@/state/AppProvider";
 import type { ProposalState } from "@/state/reducer";
 
 const CONDITION_META: Record<string, { label: string; quantity?: Quantity }> = {
-  ambientTempC: { label: "Ambient temperature", quantity: "temperature" },
+  ambientTempC: { label: "Air temperature", quantity: "temperature" },
   elevationM: { label: "Elevation", quantity: "elevation" },
   surface: { label: "Road surface" },
 };
@@ -38,7 +39,7 @@ function show(value: number | string | null, quantity: Quantity | undefined, uni
 const issueKey = (i: { scenario: string; key?: string; message: string }) => `${i.scenario}|${i.key}|${i.message}`;
 
 export default function ProposalPanel({ ps }: { ps: ProposalState }) {
-  const { state, dispatch, runAnalysisNow } = useApp();
+  const { state, dispatch } = useApp();
   const [editing, setEditing] = useState(false);
   const [ack, setAck] = useState(false);
   const [choosing, setChoosing] = useState<string | null>(null);
@@ -51,6 +52,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
   const preview = useMemo(() => applyProposal(state.config, proposal, ps), [state.config, proposal, ps]);
   const vehicle = proposalVehicle(proposal, ps.chosen);
   const needsChoice = proposal.vehicle?.kind === "choose" && !ps.chosen;
+  const identifyOnly = proposal.vehicle?.kind === "identify" || proposal.vehicle?.kind === "not_found";
 
   // Only issues introduced by this proposal block it; pre-existing ones are shown in Manual Setup.
   const before = useMemo(() => new Set(validateConfig(state.config).issues.map(issueKey)), [state.config]);
@@ -60,44 +62,44 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
   const newWarnings = newIssues.filter((i) => i.severity === "warning");
   const selectedCount = proposal.changes.filter((c) => ps.selected[c.id]).length;
   const nothingToApply = !vehicle && selectedCount === 0;
-  const canApply = pending && !needsChoice && !nothingToApply && newErrors.length === 0 && (newWarnings.length === 0 || ack);
+  const valid = pending && !needsChoice && !nothingToApply && newErrors.length === 0 && (newWarnings.length === 0 || ack);
 
   const choose = async (trimId: string) => {
     setChoosing(trimId);
     setChooseError(null);
     try {
-      const res = await fetch(`/api/vehicles/spec?trimId=${encodeURIComponent(trimId)}`);
+      const res = await fetch(`/api/vehicles/spec?trimId=${encodeURIComponent(trimId)}`, { signal: AbortSignal.timeout(12000) });
       const body = await res.json();
       if (!res.ok) throw new Error(body?.error ?? "Could not load that trim.");
       dispatch({ type: "proposalChoose", proposalId: proposal.id, specSet: body.specSet as SpecSet });
     } catch (e) {
-      setChooseError((e as Error).message);
+      setChooseError((e as Error).name === "TimeoutError" ? "Loading that trim timed out. Try again." : (e as Error).message);
     } finally {
       setChoosing(null);
     }
   };
 
-  const apply = () => {
+  /** Applies the approved values to the shared configuration (explicit user action). */
+  const commit = (then: "run" | "manual") => {
     const { config } = applyProposal(state.config, proposal, ps);
-    dispatch({
-      type: "proposalApplied",
-      proposalId: proposal.id,
-      config,
-      baseline: vehicle,
-      view: proposal.view ?? (config.modified ? "compare" : null),
-    });
-    if (proposal.runAfterApply) runAnalysisNow(false);
+    dispatch({ type: "proposalApplied", proposalId: proposal.id, config, baseline: vehicle, view: proposal.view ?? (config.modified ? "compare" : null) });
+    if (then === "run" && config.stock && validateConfig(config).errors === 0) dispatch({ type: "requestRun", navigate: false, source: "assistant" });
+    if (then === "manual") dispatch({ type: "setMode", mode: "manual" });
+  };
+
+  const enterManually = () => {
+    const v = proposal.vehicle;
+    const specSet = v && "specSet" in v ? v.specSet : customSpecSet(v?.label ?? "Custom vehicle", null);
+    dispatch({ type: "proposalApplied", proposalId: proposal.id, config: { stock: specSet, modified: null, conditions: state.config.conditions }, baseline: specSet, view: null });
+    dispatch({ type: "setMode", mode: "manual" });
   };
 
   return (
-    <section
-      aria-label="Proposed configuration"
-      className={cx("animate-enter rounded-lg border bg-surface", pending ? "border-accent/40" : "border-line opacity-90")}
-    >
+    <section aria-label="Review changes" className={cx("animate-enter rounded-lg border bg-surface", pending ? "border-accent/45" : "border-line opacity-90")}>
       <header className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5">
-        <h3 className="text-[13.5px] font-semibold">Proposed configuration</h3>
+        <h3 className="text-[14px] font-semibold">Review changes</h3>
         <span className={cx("text-[11px] font-medium tracking-wide uppercase", pending ? "text-accent" : ps.status === "applied" ? "text-gain" : "text-faint")}>
-          {ps.status === "pending" ? "Awaiting review" : ps.status}
+          {ps.status === "pending" ? "Needs your approval" : ps.status}
         </span>
       </header>
 
@@ -107,17 +109,16 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
             <div className="text-xs font-medium text-muted">Vehicle</div>
             {proposal.vehicle.kind === "load" && (
               <div>
-                <div className="font-medium text-ink">Load {proposal.vehicle.label}</div>
+                <div className="font-medium text-ink">{proposal.vehicle.label}</div>
                 <p className="mt-0.5 text-xs leading-4 text-muted">{proposal.vehicle.note} Specifications come from the dataset, not the AI.</p>
               </div>
             )}
-            {proposal.vehicle.kind === "identify" && (
+            {identifyOnly && (
               <div>
-                <div className="font-medium text-ink">Identify {proposal.vehicle.label}</div>
+                <div className="font-medium text-ink">{proposal.vehicle.label}</div>
                 <p className="mt-0.5 text-xs leading-4 text-caution">{proposal.vehicle.note}</p>
               </div>
             )}
-            {proposal.vehicle.kind === "not_found" && <p className="text-xs leading-4 text-caution">{proposal.vehicle.note}</p>}
             {proposal.vehicle.kind === "choose" && (
               <fieldset disabled={!pending} className="space-y-1.5">
                 <legend className="mb-1 text-xs leading-4 text-muted">{proposal.vehicle.note}</legend>
@@ -135,10 +136,11 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                       )}
                     >
                       <span className="min-w-0">{c.label}</span>
-                      {choosing === c.trimId ? <Spinner /> : selected ? <Check size={14} className="text-accent" aria-hidden /> : null}
+                      {selected && <Check size={14} className="shrink-0 text-accent" aria-hidden />}
                     </button>
                   );
                 })}
+                {choosing && <LoadingStage make={proposal.vehicle.make} label="Loading verified specifications" compact />}
                 {chooseError && <p className="text-xs text-loss">{chooseError}</p>}
               </fieldset>
             )}
@@ -153,14 +155,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
 
         {proposal.changes.length > 0 && (
           <div>
-            <div className="mb-1.5 flex items-center justify-between">
-              <span className="text-xs font-medium text-muted">Changes</span>
-              {pending && (
-                <button type="button" onClick={() => setEditing((v) => !v)} className="inline-flex items-center gap-1 text-xs text-muted hover:text-ink">
-                  <Pencil size={12} aria-hidden /> {editing ? "Done editing" : "Edit values"}
-                </button>
-              )}
-            </div>
+            <div className="mb-1.5 text-xs font-medium text-muted">Values that will change</div>
             <ul className="space-y-2">
               {evaluation.rows.map((row) => {
                 const c = row.change;
@@ -183,12 +178,11 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                           <span className="text-[11px] text-faint">{c.target === "conditions" ? "Conditions" : c.target === "modified" ? "Modified" : "Stock"}</span>
                           <ProvenanceTag provenance="user" title="User-provided assumption" />
                         </span>
-                        <span className="num mt-0.5 block text-xs text-muted">
+                        <span className="num mt-0.5 block text-[13px] text-muted">
                           {show(row.from, m.quantity, units)} → <span className="text-accent">{row.to == null ? "—" : show(row.to, m.quantity, units)}</span>
-                          <span className="ml-1 text-faint">({c.display})</span>
+                          <span className="ml-1 text-xs text-faint">({c.display})</span>
                         </span>
-                        {c.reason && <span className="mt-0.5 block text-[11.5px] text-faint">“{c.reason}”</span>}
-                        {!c.statedByUser && <span className="mt-0.5 block text-[11.5px] text-caution">Not stated in your message — verify before applying.</span>}
+                        {!c.statedByUser && <span className="mt-0.5 block text-[11.5px] text-caution">You didn&apos;t state this number — check it before applying.</span>}
                         {row.error && <span className="mt-0.5 block text-[11.5px] text-loss">{row.error}</span>}
                       </span>
                     </label>
@@ -210,7 +204,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                               value: e.target.value.trim() && Number.isFinite(n) ? fromDisplay(m.quantity!, n, units) : undefined,
                             });
                           }}
-                          className="num h-8 w-28 rounded-md border border-line bg-bg px-2 text-xs"
+                          className="num h-9 w-28 rounded-md border border-line bg-bg px-2 text-[13px]"
                         />
                         <span className="text-[11px] text-faint">{unitLabel(m.quantity!, units)}</span>
                       </div>
@@ -219,12 +213,17 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                 );
               })}
             </ul>
+            {pending && (
+              <button type="button" onClick={() => setEditing((v) => !v)} className="mt-2 text-xs text-muted underline decoration-dotted underline-offset-4 hover:text-ink">
+                {editing ? "Done adjusting" : "Adjust values"}
+              </button>
+            )}
           </div>
         )}
 
         {proposal.rejected.length > 0 && (
           <div className="text-xs leading-4">
-            <div className="mb-1 font-medium text-muted">Not applied</div>
+            <div className="mb-1 font-medium text-muted">Not included</div>
             <ul className="space-y-1 text-faint">
               {proposal.rejected.map((r, i) => (
                 <li key={i}>
@@ -237,9 +236,9 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
 
         {pending && newIssues.length > 0 && (
           <div className="space-y-2 rounded-md border border-line bg-bg/60 px-3 py-2">
-            <div className="text-xs font-medium text-muted">Validation of the proposed configuration</div>
-            <IssueList issues={newIssues.map((i) => ({ ...i, fixes: undefined }))} />
-            {newErrors.length > 0 && <p className="text-xs text-loss">Edit the values or cancel — invalid inputs cannot be applied.</p>}
+            <div className="text-xs font-medium text-muted">Validation</div>
+            <IssueList issues={newIssues} actions={false} />
+            {newErrors.length > 0 && <p className="text-xs text-loss">Adjust the values or cancel — invalid inputs can&apos;t be applied.</p>}
             {newErrors.length === 0 && newWarnings.length > 0 && (
               <label className="flex items-start gap-2 text-xs text-[#e9cf98]">
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]" />
@@ -249,23 +248,33 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
           </div>
         )}
 
-        {pending && proposal.runAfterApply && <p className="text-[11.5px] text-faint">Applying will also run the analysis with the physics engine.</p>}
-
-        {pending ? (
+        {pending && identifyOnly ? (
           <div className="flex flex-wrap gap-2 pt-1">
-            <Button variant="primary" size="sm" onClick={apply} disabled={!canApply}>
-              <Check size={14} aria-hidden /> Apply to simulation
+            <Button variant="primary" size="sm" onClick={enterManually}>
+              <PencilLine size={14} aria-hidden /> Enter specifications manually
             </Button>
-            <Button size="sm" onClick={() => setEditing((v) => !v)} disabled={!proposal.changes.length}>
-              <Pencil size={14} aria-hidden /> Edit
+            <Button size="sm" variant="ghost" onClick={() => dispatch({ type: "proposalCancel", proposalId: proposal.id })}>
+              <X size={14} aria-hidden /> Cancel
+            </Button>
+          </div>
+        ) : pending ? (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button variant="primary" size="sm" onClick={() => commit("run")} disabled={!valid}>
+              <Check size={14} aria-hidden /> Apply to Simulation
+            </Button>
+            <Button size="sm" onClick={() => commit("manual")} disabled={!valid}>
+              <PencilLine size={14} aria-hidden /> Edit Manually
             </Button>
             <Button size="sm" variant="ghost" onClick={() => dispatch({ type: "proposalCancel", proposalId: proposal.id })}>
               <X size={14} aria-hidden /> Cancel
             </Button>
           </div>
         ) : ps.status === "applied" ? (
-          <Notice tone="success">Applied. The configuration now includes these changes{proposal.runAfterApply ? " and the analysis was run." : "."}</Notice>
+          <Notice tone="success">Applied to the shared configuration.</Notice>
         ) : null}
+        {pending && !identifyOnly && (
+          <p className="text-[11.5px] leading-4 text-faint">Apply runs the physics engine with these values. Edit Manually applies them and opens Manual Setup instead.</p>
+        )}
       </div>
     </section>
   );

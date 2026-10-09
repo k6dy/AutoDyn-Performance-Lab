@@ -37,92 +37,92 @@ export const NUMERIC_FIELDS: Record<NumericSpecKey, NumericFieldDef> = {
   peakPowerKw: {
     key: "peakPowerKw", label: "Peak power", quantity: "power", section: "powertrain", tier: "basic",
     hard: [1, 5000], typical: [30, 900], required: true, estimable: false, digits: 0,
-    help: "Rated peak output (SAE net for US-market data). Required — AutoDyn will not guess power.",
+    help: "Maximum engine or motor output. Required — AutoDyn never guesses power.",
   },
   peakTorqueNm: {
     key: "peakTorqueNm", label: "Peak torque", quantity: "torque", section: "powertrain", tier: "basic",
     hard: [1, 20000], typical: [50, 1500], estimable: true, digits: 0,
-    help: "If unknown, estimated from peak power and an assumed power-peak speed (low confidence).",
+    help: "Optional. If left blank, AutoDyn estimates it from power (labeled, low confidence).",
   },
   peakPowerRpm: {
     key: "peakPowerRpm", label: "Power peak speed", evLabel: "Base motor speed", quantity: "rpm", section: "powertrain", tier: "advanced",
     hard: [300, 30000], typical: [2500, 9500], integer: true, estimable: true, digits: 0,
-    help: "Engine speed at peak power. Estimated from redline when unknown.",
+    help: "Engine speed where maximum power is made.",
   },
   peakTorqueRpm: {
     key: "peakTorqueRpm", label: "Torque peak speed", quantity: "rpm", section: "powertrain", tier: "advanced",
     hard: [300, 30000], typical: [1000, 8000], integer: true, estimable: true, digits: 0,
-    help: "Engine speed where peak torque begins. Turbocharged engines often reach it near 1,500–2,000 rpm.",
+    help: "Engine speed where maximum torque starts. Turbo engines: often 1,500–2,000 rpm.",
   },
   redlineRpm: {
     key: "redlineRpm", label: "Redline", evLabel: "Max motor speed", quantity: "rpm", section: "powertrain", tier: "advanced",
     hard: [1000, 30000], typical: [4000, 20000], integer: true, estimable: true, digits: 0,
-    help: "Maximum engine (or motor) speed used for shifting and top-speed limits.",
+    help: "Highest engine or motor speed; sets shift points and gearing-limited top speed.",
   },
   gearCount: {
     key: "gearCount", label: "Forward gears", quantity: "count", section: "powertrain", tier: "advanced",
     hard: [1, 12], typical: [1, 10], integer: true, estimable: true, digits: 0,
-    help: "Number of forward ratios. Parsed from the transmission description when available.",
+    help: "Number of forward gears.",
   },
   finalDrive: {
     key: "finalDrive", label: "Final drive ratio", evLabel: "Reduction ratio", quantity: "ratio", section: "powertrain", tier: "advanced",
     hard: [0.5, 30], typical: [2, 12], estimable: true, digits: 2,
-    help: "When unknown, sized so first gear tops out at a typical speed at redline (estimate).",
+    help: "Axle gear ratio. Higher = quicker acceleration, lower top speed in each gear.",
   },
   shiftTimeS: {
     key: "shiftTimeS", label: "Shift interruption", quantity: "time", section: "powertrain", tier: "advanced",
     hard: [0, 3], typical: [0, 0.8], estimable: true, digits: 2,
-    help: "Effective time with no drive torque per upshift. Defaults depend on transmission type.",
+    help: "Time without drive per upshift. Dual-clutch ≈ 0.1 s, automatic ≈ 0.1–0.2 s, manual ≈ 0.3 s.",
   },
   curbMassKg: {
-    key: "curbMassKg", label: "Curb mass", quantity: "mass", section: "vehicle", tier: "basic",
+    key: "curbMassKg", label: "Curb weight", quantity: "mass", section: "vehicle", tier: "basic",
     hard: [50, 50000], typical: [700, 3500], required: true, estimable: false, digits: 0,
-    help: "Vehicle mass with fluids, without occupants. Required — AutoDyn will not guess mass.",
+    help: "Vehicle weight with fluids, without people. Required — AutoDyn never guesses weight.",
   },
   payloadKg: {
-    key: "payloadKg", label: "Driver & payload", quantity: "mass", section: "vehicle", tier: "basic",
+    key: "payloadKg", label: "Driver & cargo", quantity: "mass", section: "vehicle", tier: "basic",
     hard: [0, 5000], typical: [0, 400], estimable: true, digits: 0,
-    help: "Added test mass. Defaults to one 80 kg (176 lb) driver.",
+    help: "Weight added to curb weight for the run. Default: one 80 kg (176 lb) driver.",
   },
   dragCoefficient: {
     key: "dragCoefficient", label: "Drag coefficient (Cd)", quantity: "coefficient", section: "vehicle", tier: "basic",
     hard: [0.05, 2], typical: [0.2, 0.6], estimable: true, digits: 3,
-    help: "Estimated from body style when the manufacturer figure is unknown.",
+    help: "How easily air flows around the body. Most cars 0.25–0.35; lower is slipperier.",
   },
   frontalAreaM2: {
     key: "frontalAreaM2", label: "Frontal area", quantity: "area", section: "vehicle", tier: "basic",
     hard: [0.3, 15], typical: [1.5, 4], estimable: true, digits: 2,
-    help: "Estimated as 0.84 × width × height when body dimensions are known.",
+    help: "Size of the car seen from the front. Most cars 2.0–2.6 m² (22–28 ft²).",
   },
   drivetrainEfficiency: {
     key: "drivetrainEfficiency", label: "Drivetrain efficiency", quantity: "fraction", section: "vehicle", tier: "basic",
     hard: [0.3, 1], typical: [0.75, 0.97], estimable: true, digits: 0,
-    help: "Fraction of crank power reaching the wheels. Estimated by drivetrain layout.",
+    help: "Share of engine power that reaches the wheels after gearbox and axle losses (enter 86 or 0.86).",
   },
   tireMu: {
-    key: "tireMu", label: "Tire friction (μ)", quantity: "coefficient", section: "vehicle", tier: "basic",
+    key: "tireMu", label: "Tire grip (μ)", quantity: "coefficient", section: "vehicle", tier: "basic",
     hard: [0.1, 3], typical: [0.6, 1.4], estimable: true, digits: 2,
-    help: "Peak longitudinal friction on dry asphalt. 1.0 ≈ street tire, 1.1–1.2 ≈ performance summer tire.",
+    help: "How much grip the tires have on dry asphalt. 1.0 ≈ everyday tires; 1.1–1.2 ≈ performance tires.",
   },
   tireRadiusM: {
     key: "tireRadiusM", label: "Tire rolling radius", quantity: "radius", section: "vehicle", tier: "advanced",
     hard: [0.1, 1.5], typical: [0.26, 0.45], estimable: true, digits: 1,
-    help: "Loaded radius of the driven tires. Enter a tire size to calculate it.",
+    help: "Distance from wheel center to the road. Use the tire-size helper to calculate it.",
   },
   rollingResistance: {
     key: "rollingResistance", label: "Rolling resistance (Crr)", quantity: "coefficient", section: "vehicle", tier: "advanced",
     hard: [0.001, 0.2], typical: [0.006, 0.02], estimable: true, digits: 4,
-    help: "Typical passenger tires on asphalt: 0.008–0.013.",
+    help: "Energy lost as tires roll. Typical passenger tires 0.008–0.013.",
   },
   frontWeightFraction: {
     key: "frontWeightFraction", label: "Front weight share", quantity: "fraction", section: "vehicle", tier: "advanced",
     hard: [0.2, 0.8], typical: [0.38, 0.65], estimable: true, digits: 0,
-    help: "Static share of weight on the front axle. Affects traction for 2WD layouts.",
+    help: "Share of weight on the front wheels. Affects launch grip for 2WD cars.",
   },
   cgHeightRatio: {
     key: "cgHeightRatio", label: "CG height ÷ wheelbase", quantity: "coefficient", section: "vehicle", tier: "advanced",
     hard: [0.05, 0.6], typical: [0.14, 0.32], estimable: true, digits: 2,
-    help: "Controls longitudinal weight transfer under acceleration.",
+    help: "How much weight shifts rearward when accelerating. Typical cars 0.18–0.22.",
   },
 };
 
@@ -154,7 +154,7 @@ export const TRANSMISSION_OPTIONS: { value: TransmissionType; label: string }[] 
 ];
 
 export const SURFACE_OPTIONS: { value: Surface; label: string; factor: number }[] = [
-  { value: "dry", label: "Dry asphalt", factor: 1 },
+  { value: "dry", label: "Dry asphalt (standard)", factor: 1 },
   { value: "prepped", label: "Prepared drag strip", factor: 1.25 },
   { value: "wet", label: "Wet asphalt", factor: 0.7 },
   { value: "gravel", label: "Gravel", factor: 0.6 },

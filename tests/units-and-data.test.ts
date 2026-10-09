@@ -91,6 +91,13 @@ describe("vehicle dataset", () => {
     expect(vehicleLabel(s.identity)).toMatch(/2015 Mercedes-Benz C300/);
   });
 
+  it("builds readable labels without repeating the model in the trim", () => {
+    const id = { year: 2015, make: "Mercedes-Benz", model: "C300" };
+    expect(vehicleLabel({ ...id, trim: "C 300" })).toBe("2015 Mercedes-Benz C300");
+    expect(vehicleLabel({ ...id, trim: "C 300 Sport 4MATIC" })).toBe("2015 Mercedes-Benz C300 Sport 4MATIC");
+    expect(vehicleLabel({ year: 2018, make: "Toyota", model: "Camry", trim: "XSE" })).toBe("2018 Toyota Camry XSE");
+  });
+
   it("keeps missing specifications unavailable instead of inventing them", () => {
     const tesla = allDatasetTrims().find((t) => t.make === "Tesla" && t.hp == null)!;
     const s = datasetTrimToSpecSet(tesla);

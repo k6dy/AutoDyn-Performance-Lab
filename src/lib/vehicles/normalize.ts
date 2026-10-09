@@ -145,6 +145,17 @@ export function customSpecSet(name: string, year: number | null): SpecSet {
 
 export function vehicleLabel(identity: Pick<VehicleIdentity, "year" | "make" | "model" | "trim">) {
   const base = [identity.year, identity.make, identity.model].filter(Boolean).join(" ");
-  const trim = identity.trim && !identity.model.toLowerCase().includes(identity.trim.toLowerCase()) ? identity.trim : null;
-  return trim ? `${base} ${trim}` : base;
+  const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const model = n(identity.model);
+  const trim = identity.trim && !model.includes(n(identity.trim)) ? identity.trim : null;
+  if (!trim) return base;
+  // "C300" + "C 300 Sport 4MATIC" → keep only the distinguishing words ("Sport 4MATIC").
+  const words = trim.split(/\s+/);
+  for (let i = 1; i <= words.length; i++) {
+    if (n(words.slice(0, i).join("")) === model) {
+      const rest = words.slice(i).join(" ");
+      return rest ? `${base} ${rest}` : base;
+    }
+  }
+  return `${base} ${trim}`;
 }

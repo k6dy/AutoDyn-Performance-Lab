@@ -1,7 +1,9 @@
 "use client";
 
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Download, FileJson, Info, Printer, RefreshCw, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
-import { useMemo } from "react";
+import { ChevronDown } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import LoadingStage from "@/components/LoadingStage";
 import { AccelChart, CurveChart, MassSweepChart, SensitivityChart, SpeedTimeChart } from "@/components/results/Charts";
 import { AnimatedNumber, Button, cx, Notice, Panel, ProvenanceTag, Segmented, Spinner } from "@/components/ui";
 import { explainAnalysis, type Finding } from "@/lib/analysis/explain";
@@ -111,10 +113,42 @@ const TONE: Record<Finding["tone"], { icon: typeof Info; cls: string }> = {
   confidence: { icon: ShieldCheck, cls: "text-muted" },
 };
 
-function Findings({ findings }: { findings: Finding[] }) {
+/** Collapsible section that expands automatically for printing. */
+function Disclosure({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const before = () => setOpen(true);
+    window.addEventListener("beforeprint", before);
+    return () => window.removeEventListener("beforeprint", before);
+  }, []);
   return (
+    <section className="print-plain print-break rounded-lg border border-line bg-surface">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left sm:px-5">
+        <span className="min-w-0">
+          <span className="block text-[15px] font-semibold tracking-tight text-ink">{title}</span>
+          {subtitle && <span className="mt-0.5 block text-[13px] leading-5 text-muted">{subtitle}</span>}
+        </span>
+        <ChevronDown size={18} aria-hidden className={cx("no-print shrink-0 text-muted transition-transform duration-200", open && "rotate-180")} />
+      </button>
+      {open && <div className="animate-enter border-t border-line px-4 py-4 sm:px-5">{children}</div>}
+    </section>
+  );
+}
+
+const FINDINGS_SHOWN = 4;
+
+function Findings({ findings }: { findings: Finding[] }) {
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    const before = () => setAll(true);
+    window.addEventListener("beforeprint", before);
+    return () => window.removeEventListener("beforeprint", before);
+  }, []);
+  const shown = all ? findings : findings.slice(0, FINDINGS_SHOWN);
+  return (
+    <>
     <ul className="divide-y divide-line/70">
-      {findings.map((f) => {
+      {shown.map((f) => {
         const t = TONE[f.tone];
         const Icon = t.icon;
         return (
@@ -128,6 +162,12 @@ function Findings({ findings }: { findings: Finding[] }) {
         );
       })}
     </ul>
+    {findings.length > FINDINGS_SHOWN && (
+      <Button size="sm" variant="ghost" className="no-print mt-2" onClick={() => setAll((v) => !v)}>
+        {all ? "Show fewer" : `Show all ${findings.length} findings`}
+      </Button>
+    )}
+    </>
   );
 }
 
@@ -192,6 +232,10 @@ export default function ResultsWorkspace() {
   const result = state.result?.analysis ?? null;
   const units = state.ui.units;
   const explanation = useMemo(() => (result ? explainAnalysis(result) : null), [result]);
+
+  if (running) {
+    return <LoadingStage make={state.config.stock?.identity.make ?? null} label="Running the physics simulation" />;
+  }
 
   if (!result) {
     return (
@@ -279,13 +323,13 @@ export default function ResultsWorkspace() {
           title="Engineering analysis"
           subtitle="Generated deterministically from the computed results and model assumptions."
           actions={
-            aiStatus === "available" && (
+            aiStatus.phase !== "unavailable" && (
               <Button
                 size="sm"
                 className="no-print"
                 onClick={() => {
                   dispatch({ type: "setMode", mode: "assistant" });
-                  sendMessage(result.modified ? "Explain why the modified version accelerates differently." : "Explain these results and which assumptions matter most.");
+                  sendMessage(result.modified ? "Explain why the modified version accelerates differently." : "Explain these results and which assumptions matter most.", { detail: true });
                 }}
               >
                 <Sparkles size={14} aria-hidden /> Ask the assistant
@@ -310,17 +354,17 @@ export default function ResultsWorkspace() {
               </ul>
             </Panel>
           )}
-          <Panel title="Model limitations">
+          <Disclosure title="Model limitations" subtitle="What this simulation does and doesn't account for.">
             <ul className="list-disc space-y-1.5 pl-4 text-[12.5px] leading-5 text-muted">
               {explanation?.limitations.map((l) => <li key={l}>{l}</li>)}
             </ul>
-          </Panel>
+          </Disclosure>
         </div>
       </div>
 
-      <Panel title="Inputs & provenance" subtitle="Every value used, where it came from, and which were estimated.">
+      <Disclosure title="Inputs & provenance" subtitle="Every value used, where it came from, and which were estimated.">
         <InputsTable result={result} units={units} />
-      </Panel>
+      </Disclosure>
 
       <div className="no-print flex flex-wrap items-center gap-2">
         <span className="mr-1 text-xs text-faint">Export</span>
