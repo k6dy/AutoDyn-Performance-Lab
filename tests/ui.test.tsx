@@ -104,8 +104,11 @@ async function loadC300() {
   await choose("sel-make", (o) => o.value === "Mercedes-Benz");
   await choose("sel-model", (o) => o.value === "C300");
   await choose("sel-trim", (o) => /^C 300 4dr Sedan/.test(o.text) && /rear wheel drive/.test(o.text));
-  await screen.findByRole("button", { name: /Run analysis/ }, { timeout: 5000 });
+  await screen.findAllByRole("button", { name: /Run analysis/ }, { timeout: 5000 });
 }
+
+// The desktop run panel and the mobile run bar both render in jsdom (no CSS); use the panel's.
+const runButton = () => screen.getAllByRole("button", { name: /Run analysis/ })[0];
 
 function setField(id: string, value: string) {
   const input = document.getElementById(id) as HTMLInputElement;
@@ -124,7 +127,7 @@ describe("workflow 1 & 2 — Manual Setup", () => {
     renderApp();
     await loadC300();
     expect((document.getElementById("f-peakPowerKw") as HTMLInputElement).value).toBe("241");
-    fireEvent.click(screen.getByRole("button", { name: /Run analysis/ }));
+    fireEvent.click(runButton());
     const row = await metricCell(/0–60 mph/);
     expect(row.textContent).toMatch(/\d\.\d\d/);
     expect(screen.getByRole("tab", { name: /Results/ }).getAttribute("aria-selected")).toBe("true");
@@ -137,7 +140,7 @@ describe("workflow 1 & 2 — Manual Setup", () => {
     setField("f-peakPowerKw", "281");
     setField("f-curbMassKg", "3399");
     expect(screen.getByText(/Stock: 241 hp/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Run analysis/ }));
+    fireEvent.click(runButton());
     const row = await metricCell(/Peak power/);
     expect(row.textContent).toMatch(/241/);
     expect(row.textContent).toMatch(/281/);
@@ -152,7 +155,7 @@ describe("workflow 1 & 2 — Manual Setup", () => {
   it("switching modes preserves inputs, and edits mark results out of date", async () => {
     renderApp();
     await loadC300();
-    fireEvent.click(screen.getByRole("button", { name: /Run analysis/ }));
+    fireEvent.click(runButton());
     await metricCell(/0–60 mph/);
     fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
     fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
@@ -241,7 +244,7 @@ describe("workflow 4 & 5 — fallbacks", () => {
     setField("f-peakPowerKw", "300");
     setField("f-curbMassKg", "3200");
     fireEvent.change(document.getElementById("f-drivetrain")!, { target: { value: "RWD" } });
-    fireEvent.click(screen.getByRole("button", { name: /Run analysis/ }));
+    fireEvent.click(runButton());
     const row = await metricCell(/0–60 mph/);
     expect(row.textContent).toMatch(/\d\.\d\d/);
   });
@@ -260,7 +263,7 @@ describe("workflow 4 & 5 — fallbacks", () => {
     setField("f-peakPowerKw", "140");
     setField("f-curbMassKg", "2700");
     fireEvent.change(document.getElementById("f-drivetrain")!, { target: { value: "FWD" } });
-    fireEvent.click(screen.getByRole("button", { name: /Run analysis/ }));
+    fireEvent.click(runButton());
     const row = await metricCell(/0–60 mph/);
     expect(row.textContent).toMatch(/\d+\.\d\d/);
   });

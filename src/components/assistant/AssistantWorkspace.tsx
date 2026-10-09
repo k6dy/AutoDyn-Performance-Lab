@@ -53,14 +53,14 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
   if (m.role === "user") {
     return (
       <div className="animate-enter flex justify-end">
-        <div className="max-w-[85%] rounded-lg border border-line bg-raised px-3.5 py-2.5 text-[14px] leading-6 whitespace-pre-line text-ink">{m.text}</div>
+        <div className="max-w-[85%] rounded-lg border border-line bg-raised px-3.5 py-2.5 text-[14px] leading-6 whitespace-pre-line text-ink [overflow-wrap:anywhere]">{m.text}</div>
       </div>
     );
   }
   return (
     <div className="animate-enter max-w-[92%] space-y-2">
       <div className="text-[11px] font-medium tracking-wide text-faint uppercase">AutoDyn assistant</div>
-      <div className={cx("text-[14px] leading-6", m.errorCode ? "text-[#f0b2aa]" : "text-ink")}>
+      <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f0b2aa]" : "text-ink")}>
         <PlainText text={m.text} />
       </div>
       {m.followUp && m.followUp !== m.text && <p className="border-l-2 border-accent pl-3 text-[13.5px] leading-5 text-ink">{m.followUp}</p>}

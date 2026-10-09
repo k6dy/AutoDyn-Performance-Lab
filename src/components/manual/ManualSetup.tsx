@@ -137,13 +137,34 @@ function RunPanel() {
   );
 }
 
+/** Phones: keep the run action reachable without scrolling past every section. */
+function MobileRunBar() {
+  const { state, running, runAnalysisNow, stale } = useApp();
+  const v = useValidation();
+  const blocked = v.errors > 0 || (v.warnings > 0 && state.ui.ackRevision !== state.revision);
+  return (
+    <div className="no-print fixed inset-x-0 bottom-0 z-20 border-t border-line bg-bg/95 px-4 py-3 backdrop-blur-[2px] lg:hidden">
+      <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-3">
+        <span className={cx("min-w-0 truncate text-xs", v.errors ? "text-loss" : v.warnings ? "text-caution" : "text-muted")}>
+          {v.errors ? `${v.errors} issue${v.errors > 1 ? "s" : ""} to resolve` : v.warnings ? `${v.warnings} warning${v.warnings > 1 ? "s" : ""} — review below` : state.config.modified ? "Stock vs. Modified" : "Stock only"}
+        </span>
+        <Button variant="primary" size="sm" disabled={blocked || running} onClick={() => runAnalysisNow(true)}>
+          {running ? <Spinner label="Running analysis" /> : <Play size={14} aria-hidden />}
+          {state.result && stale ? "Re-run" : "Run analysis"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ManualSetup() {
   const { state, dispatch } = useApp();
   const v = useValidation();
   const stock = state.config.stock;
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+    <div className={cx("grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]", stock && "pb-16 lg:pb-0")}>
+      {stock && <MobileRunBar />}
       <div className="min-w-0 space-y-4">
         <Panel
           title="Vehicle"

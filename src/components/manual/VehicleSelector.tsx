@@ -184,8 +184,8 @@ export default function VehicleSelector() {
         value={source}
         onChange={setSource}
         options={[
-          { value: "lookup", label: "Year / make / model" },
-          { value: "vin", label: "VIN decode" },
+          { value: "lookup", label: "Database lookup" },
+          { value: "vin", label: "VIN" },
           { value: "custom", label: "Custom vehicle" },
         ]}
       />

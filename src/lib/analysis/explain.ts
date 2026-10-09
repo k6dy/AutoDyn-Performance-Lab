@@ -188,7 +188,7 @@ export function comparisonFindings(result: AnalysisResult): Finding[] {
           share > 0.2
             ? `The modified car is traction-limited for ${s(share * 100, 0)}% of the 0–60 run, where added power is unusable.`
             : "Shift time, rolling resistance and drag do not scale with power."
-        } Elapsed time scales roughly with the cube root of power-to-weight, so a ${pct(ptwPct)} change in power-to-weight would ideally give about ${pct((Math.cbrt(1 + ptwPct / 100) - 1) * -100)} in quarter-mile time.`,
+        } Elapsed time scales roughly with the cube root of power-to-weight, so a ${pct(ptwPct)} change in power-to-weight would ideally give about ${pct((Math.pow(1 + ptwPct / 100, -1 / 3) - 1) * 100)} in quarter-mile time.`,
       });
     }
   }
