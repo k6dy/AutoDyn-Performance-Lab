@@ -1,6 +1,8 @@
 import "server-only";
 import index from "@/data/vehicle-index.json";
-import type { DatasetTrim } from "@/lib/vehicles/normalize";
+import type { SpecSet } from "@/lib/domain/types";
+import { datasetTrimToSpecSet, type DatasetTrim } from "@/lib/vehicles/normalize";
+import { estimateWeightFromDataset } from "@/lib/vehicles/weight";
 
 type Index = { columns: string[]; rows: (string | number | null)[][] };
 
@@ -45,4 +47,14 @@ export function datasetTrim(id: string): DatasetTrim | null {
 
 export function allDatasetTrims(): DatasetTrim[] {
   return load().trims;
+}
+
+/** Spec set for a trim, with a curb-weight estimate *offered* when the source has no weight. */
+export function datasetSpecSet(trim: DatasetTrim): SpecSet {
+  const specSet = datasetTrimToSpecSet(trim);
+  if (trim.curbWeightLb == null) {
+    const estimate = estimateWeightFromDataset(trim, load().trims);
+    if (estimate) specSet.identity.weightEstimate = estimate;
+  }
+  return specSet;
 }

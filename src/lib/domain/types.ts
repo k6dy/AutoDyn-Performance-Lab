@@ -5,6 +5,11 @@ export type Provenance = "verified" | "user" | "estimated" | "unavailable";
 export type SpecValue<T> = {
   value: T | null;
   provenance: Provenance;
+  /**
+   * Modified scenario only: a change relative to stock (SI). When present the effective value is
+   * always stock + delta, so later edits to the stock baseline carry through.
+   */
+  delta?: number;
   /** Where a verified value came from, or why an estimate was chosen. */
   source?: string;
   note?: string;
@@ -55,6 +60,15 @@ export const SPEC_KEYS: SpecKey[] = [...ENUM_KEYS, ...NUMERIC_KEYS, "gearRatios"
 
 export type VehicleSource = "dataset" | "nhtsa" | "vin" | "custom";
 
+export type WeightEstimate = {
+  kg: number;
+  lowKg: number;
+  highKg: number;
+  method: "same-model" | "model-years" | "class";
+  classId?: string;
+  basis: string;
+};
+
 export type VehicleIdentity = {
   year: number | null;
   make: string;
@@ -67,6 +81,8 @@ export type VehicleIdentity = {
   engineDescription?: string;
   bodyStyle?: string;
   fuel?: "gas" | "diesel" | "electric" | "other";
+  /** Offered (not applied) when the source has no curb weight. */
+  weightEstimate?: WeightEstimate;
   notes: string[];
 };
 

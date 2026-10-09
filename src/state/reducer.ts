@@ -45,6 +45,8 @@ export type AppState = {
   runRequest: { revision: number; navigate: boolean; source: "manual" | "assistant" } | null;
   /** True when the configuration was restored from a previous browser session. */
   restored: boolean;
+  /** Saved values that were physically invalid and were reset during restore. */
+  restoredFixes: string[];
   ui: { mode: Mode; editing: ScenarioId; view: ResultsView; units: UnitSystem; ackRevision: number | null; advancedOpen: boolean };
   chat: { messages: ChatMessage[]; proposals: Record<string, ProposalState>; pending: string | null };
 };
@@ -56,12 +58,13 @@ export const initialState: AppState = {
   result: null,
   runRequest: null,
   restored: false,
+  restoredFixes: [],
   ui: { mode: "manual", editing: "stock", view: "compare", units: "imperial", ackRevision: null, advancedOpen: false },
   chat: { messages: [], proposals: {}, pending: null },
 };
 
 export type Action =
-  | { type: "hydrate"; state: Pick<AppState, "config" | "baseline" | "chat"> & { units: UnitSystem } }
+  | { type: "hydrate"; state: Pick<AppState, "config" | "baseline" | "chat"> & { units: UnitSystem; sanitized?: string[] } }
   | { type: "loadVehicle"; specSet: SpecSet }
   | { type: "clearVehicle" }
   | { type: "setStockValue"; key: SpecKey; value: SpecValues[SpecKey] }
@@ -107,6 +110,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ui: { ...state.ui, units: action.state.units },
         revision: state.revision + 1,
         restored: !!action.state.config.stock,
+        restoredFixes: action.state.sanitized ?? [],
       };
     case "loadVehicle":
       return {
@@ -148,7 +152,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "startFresh":
       return { ...initialState, revision: state.revision + 1, ui: { ...initialState.ui, units: state.ui.units } };
     case "dismissRestored":
-      return { ...state, restored: false };
+      return { ...state, restored: false, restoredFixes: [] };
     case "setAdvancedOpen":
       return { ...state, ui: { ...state.ui, advancedOpen: action.open } };
     case "createModified":

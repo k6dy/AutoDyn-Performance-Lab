@@ -5,7 +5,7 @@ import { z } from "zod";
 import { NUMERIC_KEYS } from "@/lib/domain/types";
 
 const provenance = z.enum(["verified", "user", "estimated", "unavailable"]);
-const meta = { provenance, source: z.string().max(200).optional(), note: z.string().max(300).optional() };
+const meta = { provenance, source: z.string().max(200).optional(), note: z.string().max(300).optional(), delta: z.number().optional() };
 const num = z.object({ value: z.number().nullable(), ...meta });
 const str = <T extends [string, ...string[]]>(values: T) => z.object({ value: z.enum(values).nullable(), ...meta });
 
@@ -33,6 +33,16 @@ export const identitySchema = z.object({
   engineDescription: z.string().max(200).optional(),
   bodyStyle: z.string().max(80).optional(),
   fuel: z.enum(["gas", "diesel", "electric", "other"]).optional(),
+  weightEstimate: z
+    .object({
+      kg: z.number().positive(),
+      lowKg: z.number().positive(),
+      highKg: z.number().positive(),
+      method: z.enum(["same-model", "model-years", "class"]),
+      classId: z.string().max(20).optional(),
+      basis: z.string().max(300),
+    })
+    .optional(),
   notes: z.array(z.string().max(400)).max(10),
 });
 

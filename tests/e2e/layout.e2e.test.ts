@@ -82,7 +82,9 @@ const shot = async (page: Page, name: string, fullPage = false) => {
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage });
 };
 
-const overflow = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+// Compare against the emulated device width: on phones, overflowing content widens the layout
+// viewport (innerWidth grows), which would otherwise hide the overflow.
+const overflow = (page: Page) => page.evaluate(() => Math.max(document.documentElement.scrollWidth, window.innerWidth) - screen.width);
 
 async function pick(page: Page, id: string, match: (text: string, value: string) => boolean) {
   await page.waitForFunction(
@@ -155,6 +157,33 @@ suite.each([360, 390])("production build at %ipx", (width) => {
 
       const relevant = logs.filter((l) => !/favicon/i.test(l));
       expect(relevant).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
+});
+
+suite.each([360, 390])("missing vehicle weight at %ipx", (width) => {
+  it("shows the estimate card without overflow; accepting it enables Run and produces results", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const { page, ctx, logs } = await newPage(width);
+    try {
+      await pick(page, "sel-year", (_t, v) => v === "2020");
+      await pick(page, "sel-make", (_t, v) => v === "Acura");
+      await pick(page, "sel-model", (_t, v) => v === "TLX");
+      await pick(page, "sel-trim", (t) => t.includes("SH-AWD PMC Edition"));
+      const card = page.getByTestId("weight-estimate");
+      await card.waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      const bar = page.getByRole("button", { name: "Run analysis (mobile)" });
+      expect(await bar.isDisabled()).toBe(true);
+      await page.locator('button[aria-label="About vehicle weight"]').focus();
+      expect(await overflow(page)).toBeLessThanOrEqual(0); // tooltip open
+      await card.getByRole("button", { name: "Use estimated weight" }).click();
+      expect(await bar.isDisabled()).toBe(false);
+      await bar.click();
+      await page.getByRole("table", { name: "Computed performance metrics" }).waitFor({ timeout: 15_000 });
+      expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
     } finally {
       await ctx.close();
     }

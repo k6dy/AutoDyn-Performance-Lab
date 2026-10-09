@@ -61,7 +61,8 @@ export function validateValues(
     const def = NUMERIC_FIELDS[key];
     const v = values[key]?.value;
     if (v === null || v === undefined) {
-      if (def.required) add("error", key, `${def.label} is required. AutoDyn does not estimate it — enter a value.`);
+      if (key === "curbMassKg") add("error", key, "Vehicle weight is needed to simulate. Use AutoDyn's estimate or enter the weight.");
+      else if (def.required) add("error", key, `${def.label} is required. AutoDyn does not estimate it — enter a value.`);
       continue;
     }
     if (typeof v !== "number" || !Number.isFinite(v)) {
@@ -69,7 +70,13 @@ export function validateValues(
       continue;
     }
     if (v < def.hard[0] || v > def.hard[1]) {
-      add("error", key, `${def.label} is outside the physically meaningful range.`);
+      add(
+        "error",
+        key,
+        key === "curbMassKg"
+          ? "Vehicle weight is not a realistic curb weight (minimum 50 kg / 110 lb). Enter the full weight, e.g. 3,400 lb."
+          : `${def.label} is outside the physically meaningful range.`,
+      );
       continue;
     }
     if (def.integer && !Number.isInteger(v)) add("error", key, `${def.label} must be a whole number.`);

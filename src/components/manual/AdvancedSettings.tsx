@@ -26,6 +26,23 @@ function Group({ title, note, children }: { title: string; note?: string; childr
   );
 }
 
+/** Read-only: the mass the simulation actually accelerates. */
+function TestMass({ b }: { b: ReturnType<typeof useFieldBinding> }) {
+  const curb = b.values.curbMassKg.value;
+  const payload = b.values.payloadKg.value ?? (b.estimates.get("payloadKg")?.value as number | undefined) ?? 80;
+  const u = unitLabel("mass", b.units);
+  const f = (kg: number) => Math.round(toDisplay("mass", kg, b.units)).toLocaleString("en-US");
+  return (
+    <div className="min-w-0 text-[13px]">
+      <div className="mb-1 text-[13px] font-medium text-muted">Simulated test mass</div>
+      <div className="num flex h-10 items-center rounded-md border border-dashed border-line px-3 text-ink sm:h-9">
+        {curb != null ? `${f(curb + payload)} ${u}` : "Needs vehicle weight"}
+      </div>
+      <div className="mt-1 text-[12px] leading-4 text-faint">Vehicle weight + driver & cargo.</div>
+    </div>
+  );
+}
+
 function ScenarioFields({ issues }: { issues: Issue[] }) {
   const { state } = useApp();
   const b = useFieldBinding(state.ui.editing);
@@ -77,11 +94,15 @@ function ScenarioFields({ issues }: { issues: Issue[] }) {
         {!isEv && !cvt && <NumericField b={b} k="shiftTimeS" issue={issueFor("shiftTimeS")} />}
       </Group>
 
+      <Group title="Mass" note="Vehicle weight (curb) is set in Key specifications.">
+        <NumericField b={b} k="payloadKg" issue={issueFor("payloadKg")} />
+        <TestMass b={b} />
+      </Group>
+
       <Group title="Aerodynamics & losses">
         <NumericField b={b} k="dragCoefficient" issue={issueFor("dragCoefficient")} />
         <NumericField b={b} k="frontalAreaM2" issue={issueFor("frontalAreaM2")} />
         <NumericField b={b} k="drivetrainEfficiency" issue={issueFor("drivetrainEfficiency")} />
-        <NumericField b={b} k="payloadKg" issue={issueFor("payloadKg")} />
       </Group>
 
       <Group title="Tires & traction">

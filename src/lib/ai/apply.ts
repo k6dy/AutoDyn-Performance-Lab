@@ -61,7 +61,7 @@ export function evaluateProposal(
   return { base, rows: proposal.changes.map((c) => rows.find((r) => r.change.id === c.id)!) };
 }
 
-function applyOne(config: AnalysisConfig, change: ProposedChange, to: number | string): AnalysisConfig {
+function applyOne(config: AnalysisConfig, change: ProposedChange, to: number | string, relative?: number): AnalysisConfig {
   if (change.target === "conditions") {
     return { ...config, conditions: { ...config.conditions, [change.key]: to } };
   }
@@ -75,6 +75,7 @@ function applyOne(config: AnalysisConfig, change: ProposedChange, to: number | s
     provenance: "user" as const,
     source: change.target === "modified" ? "User-provided assumption (AI Build Assistant)" : "User-provided (AI Build Assistant)",
     note: change.reason || undefined,
+    ...(relative !== undefined ? { delta: relative } : {}),
   } as SpecValues[typeof key];
   if (change.target === "stock") return { ...config, stock: setStockValue(config.stock, key, specValue) };
   const withModified = config.modified ? config : { ...config, modified: { overrides: {} } };
@@ -99,7 +100,9 @@ export function applyProposal(
       skipped.push({ id: row.change.id, reason: evald.error ?? "No value" });
       continue;
     }
-    next = applyOne(next, row.change, evald.to);
+    // "+40 hp" / "−150 lb" on Modified stay relative to stock unless the user typed an absolute value.
+    const relative = row.change.target === "modified" && row.change.op === "add" && selection.edits?.[row.change.id] === undefined ? (row.change.value as number) : undefined;
+    next = applyOne(next, row.change, evald.to, relative);
     applied.push(row.change.id);
   }
   if (proposal.view && proposal.view !== "stock" && !next.modified && proposal.changes.some((c) => c.target === "modified")) {

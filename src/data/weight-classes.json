@@ -1,0 +1,53 @@
+{
+  "source": "Curb weights of 2015–2020 trims in the CarAPI dataset",
+  "classes": {
+    "car-mid": {
+      "n": 2822,
+      "p25Lb": 3320,
+      "medianLb": 3571,
+      "p75Lb": 3840
+    },
+    "suv-large": {
+      "n": 1158,
+      "p25Lb": 4619,
+      "medianLb": 5356,
+      "p75Lb": 5750
+    },
+    "car-small": {
+      "n": 2370,
+      "p25Lb": 2778,
+      "medianLb": 3056,
+      "p75Lb": 3362
+    },
+    "suv-mid": {
+      "n": 2016,
+      "p25Lb": 3887,
+      "medianLb": 4118,
+      "p75Lb": 4508
+    },
+    "car-large": {
+      "n": 1463,
+      "p25Lb": 3961,
+      "medianLb": 4215,
+      "p75Lb": 4502
+    },
+    "suv-small": {
+      "n": 1201,
+      "p25Lb": 3237,
+      "medianLb": 3397,
+      "p75Lb": 3651
+    },
+    "pickup": {
+      "n": 3719,
+      "p25Lb": 4895,
+      "medianLb": 5932,
+      "p75Lb": 6629
+    },
+    "van": {
+      "n": 861,
+      "p25Lb": 4450,
+      "medianLb": 4987,
+      "p75Lb": 5956
+    }
+  }
+}

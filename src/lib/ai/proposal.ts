@@ -23,7 +23,7 @@ const id = (v: number) => v;
 const FIELD_MAP: Record<AiField, FieldMap> = {
   power: { key: "peakPowerKw", units: { hp: hpToKw, kw: id, ps: psToKw }, percentAllowed: true, label: "Peak power" },
   torque: { key: "peakTorqueNm", units: { lbft: lbftToNm, nm: id }, percentAllowed: true, label: "Peak torque" },
-  mass: { key: "curbMassKg", units: { lb: lbToKg, kg: id }, percentAllowed: true, label: "Curb mass" },
+  mass: { key: "curbMassKg", units: { lb: lbToKg, kg: id }, percentAllowed: true, label: "Vehicle weight" },
   payload: { key: "payloadKg", units: { lb: lbToKg, kg: id }, label: "Driver & payload" },
   dragCoefficient: { key: "dragCoefficient", units: { none: id }, percentAllowed: true, label: "Drag coefficient" },
   frontalArea: { key: "frontalAreaM2", units: { m2: id, ft2: (v) => v * M2_PER_FT2 }, percentAllowed: true, label: "Frontal area" },

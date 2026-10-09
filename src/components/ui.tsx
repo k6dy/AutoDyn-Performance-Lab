@@ -89,13 +89,13 @@ const PROV_STYLE: Record<Provenance, string> = {
   unavailable: "text-unavailable border-unavailable/35",
 };
 
-export function ProvenanceTag({ provenance, title, compact }: { provenance: Provenance; title?: string; compact?: boolean }) {
+export function ProvenanceTag({ provenance, title, compact, label }: { provenance: Provenance; title?: string; compact?: boolean; label?: string }) {
   return (
     <span
       title={title}
       className={cx("inline-flex h-[18px] shrink-0 items-center rounded-sm border px-1.5 text-[10.5px] font-medium tracking-wide uppercase", PROV_STYLE[provenance])}
     >
-      {compact ? PROVENANCE_LABEL[provenance].slice(0, 4) : PROVENANCE_LABEL[provenance]}
+      {label ?? (compact ? PROVENANCE_LABEL[provenance].slice(0, 4) : PROVENANCE_LABEL[provenance])}
     </span>
   );
 }

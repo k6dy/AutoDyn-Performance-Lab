@@ -3,7 +3,7 @@ import { aiConfig, deploymentInfo, geminiCaller, lastProviderHealth } from "@/li
 import { handleAssistantRequest } from "@/lib/ai/handler";
 import { clientKeyFrom, getRateLimiter } from "@/lib/ai/rateLimit.server";
 import type { AssistantStatus } from "@/lib/ai/types";
-import { allDatasetTrims } from "@/lib/vehicles/dataset.server";
+import { allDatasetTrims, datasetSpecSet } from "@/lib/vehicles/dataset.server";
 import { nhtsaModels } from "@/lib/vehicles/nhtsa.server";
 
 export const maxDuration = 30;
@@ -42,6 +42,7 @@ export async function POST(request: Request) {
     limiter: getRateLimiter(),
     clientKey: await clientKeyFrom(request.headers),
     trims: allDatasetTrims,
+    specSetFor: datasetSpecSet,
     nhtsaModels,
   });
   const headers: Record<string, string> = { ...noStore };

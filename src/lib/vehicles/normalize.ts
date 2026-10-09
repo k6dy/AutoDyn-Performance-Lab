@@ -37,6 +37,7 @@ export type DatasetTrim = {
   widthIn: number | null;
   heightIn: number | null;
   wheelbaseIn: number | null;
+  lengthIn: number | null;
 };
 
 export const DATASET_SOURCE = "CarAPI dataset (manufacturer-published specs)";
@@ -104,6 +105,7 @@ export function datasetTrimToSpecSet(t: DatasetTrim): SpecSet {
   if (t.hp == null) missing.push("power");
   if (t.torqueLbFt == null) missing.push("torque");
   if (t.curbWeightLb == null) missing.push("curb weight");
+  const missingNote = missing.filter((m) => m !== "curb weight");
 
   return {
     identity: {
@@ -117,7 +119,7 @@ export function datasetTrimToSpecSet(t: DatasetTrim): SpecSet {
       engineDescription: [engineText, t.engineType].filter(Boolean).join(" · ") || undefined,
       bodyStyle: t.body ?? undefined,
       fuel: fuelOf(t),
-      notes: missing.length ? [`The source dataset does not list ${missing.join(", ")} for this trim. Enter values to run a simulation.`] : [],
+      notes: missingNote.length ? [`The source dataset does not list ${missingNote.join(" or ")} for this trim.`] : [],
     },
     values,
   };

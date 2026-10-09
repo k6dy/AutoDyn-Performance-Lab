@@ -4,6 +4,7 @@ import { Plus } from "lucide-react";
 import { useState } from "react";
 import { CommitInput, formatDisplay, inputClass, NumericField, Row, SelectField, useFieldBinding } from "@/components/manual/controls";
 import { BASIC_KEYS } from "@/components/manual/AdvancedSettings";
+import WeightField from "@/components/manual/WeightField";
 import { Button, cx, Notice, Panel, ProvenanceTag, Segmented } from "@/components/ui";
 import { DRIVETRAIN_OPTIONS, NUMERIC_FIELDS, SURFACE_OPTIONS, TRANSMISSION_OPTIONS } from "@/lib/domain/fields";
 import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
@@ -35,12 +36,12 @@ export function KeySpecs({ issues }: { issues: Issue[] }) {
       subtitle={
         identity.source === "dataset"
           ? `Verified values from ${identity.sourceDetail}. Edit only if your car differs.`
-          : "Enter what you know. Power and curb weight are all that's required."
+          : "Enter what you know. Power and vehicle weight are all that's required."
       }
     >
       <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2">
         <NumericField b={b} k="peakPowerKw" label="Power" issue={issueFor("peakPowerKw")} showHelp={v.peakPowerKw.value == null} />
-        <NumericField b={b} k="curbMassKg" issue={issueFor("curbMassKg")} showHelp={v.curbMassKg.value == null} />
+        <WeightField b={b} issue={issueFor("curbMassKg")} />
         {torqueShown ? (
           <NumericField b={b} k="peakTorqueNm" label="Torque (optional)" issue={issueFor("peakTorqueNm")} showHelp={v.peakTorqueNm.value == null} />
         ) : (
@@ -72,16 +73,25 @@ function DeltaField({ k, label, chips }: { k: NumericSpecKey; label: string; chi
   const stock = state.config.stock!.values[k].value;
   const mod = effectiveValues(state.config, "modified")![k].value;
   const unit = unitLabel(def.quantity, units);
-  if (stock == null) return null;
+  if (stock == null) {
+    return (
+      <div className="min-w-0 text-[12.5px] leading-5 text-muted">
+        <div className="mb-1 text-[13px] font-medium">{label}</div>
+        Set the stock {k === "curbMassKg" ? "vehicle weight" : NUMERIC_FIELDS[k].label.toLowerCase()} first.
+      </div>
+    );
+  }
   const stockD = toDisplay(def.quantity, stock, units);
   const modD = mod == null ? stockD : toDisplay(def.quantity, mod, units);
   const delta = Math.round((modD - stockD) * 10) / 10;
   const commit = (d: number | null) => {
     if (d == null || Math.abs(d) < 1e-9) return dispatch({ type: "resetField", scenario: "modified", key: k });
+    const value = fromDisplay(def.quantity, stockD + d, units);
     dispatch({
       type: "setModifiedValue",
       key: k,
-      value: { value: fromDisplay(def.quantity, stockD + d, units), provenance: "user", source: "User-provided assumption", note: `${d > 0 ? "+" : ""}${d} ${unit} vs stock` },
+      // Stored relative to stock so later corrections to the stock value carry through.
+      value: { value, delta: value - stock, provenance: "user", source: "User-provided assumption", note: `${d > 0 ? "+" : ""}${d} ${unit} vs stock` },
     });
   };
   return (
@@ -193,7 +203,7 @@ export function ScenarioSetup() {
             />
             <DeltaField
               k="curbMassKg"
-              label="Weight change"
+              label="Vehicle weight change"
               chips={[
                 { label: imperial ? "−100 lb" : "−50 kg", delta: () => (imperial ? -100 : -50) },
                 { label: imperial ? "−250 lb" : "−100 kg", delta: () => (imperial ? -250 : -100) },

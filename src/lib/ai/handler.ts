@@ -9,6 +9,7 @@ import { AI_LIMITS, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
+import type { SpecSet } from "@/lib/domain/types";
 import type { ModelCallResult } from "@/lib/ai/gemini.server";
 
 export type AssistantDeps = {
@@ -18,6 +19,8 @@ export type AssistantDeps = {
   limiter: { check(key: string): Promise<LimitDecision>; claim(id: string): Promise<boolean> };
   clientKey: string;
   trims: () => DatasetTrim[];
+  /** Builds a spec set for a matched trim (server attaches weight estimates). */
+  specSetFor?: (trim: DatasetTrim) => SpecSet;
   nhtsaModels: (make: string, year: number) => Promise<string[]>;
 };
 
@@ -50,7 +53,7 @@ async function resolveVehicle(q: VehicleQuery, deps: AssistantDeps): Promise<{ p
   if (!q.make || !q.model) return { proposal: null, question: "Which vehicle do you mean? Please include the year, make and model." };
   const match = matchVehicle(deps.trims(), q);
   if (match.status === "unique") {
-    const specSet = datasetTrimToSpecSet(match.trim);
+    const specSet = deps.specSetFor ? deps.specSetFor(match.trim) : datasetTrimToSpecSet(match.trim);
     return {
       proposal: {
         kind: "load",

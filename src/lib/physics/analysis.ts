@@ -92,7 +92,8 @@ function attribute(config: AnalysisConfig, changed: SpecKey[]): AttributionItem[
     const keys = g.keys.filter((k) => changed.includes(k));
     if (!keys.length) continue;
     const values = { ...stock.values };
-    for (const k of keys) (values as Record<string, unknown>)[k] = config.modified!.overrides[k];
+    const mod = effectiveValues(config, "modified")!;
+    for (const k of keys) (values as Record<string, unknown>)[k] = mod[k];
     const r = resolveInputs(values as SpecValues, config.conditions, stock.identity);
     if (!r.ok) continue;
     const run = quick(r.inputs, config.conditions.rollout);

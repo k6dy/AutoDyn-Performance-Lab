@@ -464,6 +464,142 @@ describe("vehicle loading states", () => {
   });
 });
 
+describe("vehicle weight", () => {
+  const weightTag = () => document.querySelector('[data-field="f-curbMassKg"]')!.querySelector("span.uppercase")!.textContent;
+  const loadTlxWithoutWeight = () => loadTrim("2020", "Acura", "TLX", (o) => /SH-AWD PMC Edition/.test(o.text));
+
+  it("sourced weight is populated automatically and labeled Verified", async () => {
+    renderApp();
+    await loadC300();
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
+    expect(weightTag()).toBe("Verified");
+    expect(screen.queryByTestId("weight-estimate")).toBeNull();
+  });
+
+  it("missing weight: run is blocked with a clear request; accepting the estimate runs the engine", async () => {
+    renderApp();
+    await loadTlxWithoutWeight();
+    const card = await screen.findByTestId("weight-estimate");
+    expect(card.textContent).toMatch(/No published curb weight/);
+    expect(card.textContent).toMatch(/Median of \d+ other 2020 Acura TLX trim/);
+    expect(fieldValue("f-curbMassKg")).toBe("");
+    expect(weightTag()).toBe("Needed");
+    expect(runButton().hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByText(/Vehicle weight is needed to simulate/).length).toBeGreaterThan(0);
+    fireEvent.click(within(card).getByRole("button", { name: "Use estimated weight" }));
+    expect(weightTag()).toBe("Estimated");
+    expect(Number(fieldValue("f-curbMassKg"))).toBeGreaterThan(3400);
+    expect(runButton().hasAttribute("disabled")).toBe(false);
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+    fireEvent.click(screen.getByRole("button", { name: /Inputs & provenance/ }));
+    const row = within(screen.getByRole("table", { name: /Simulation inputs/ })).getByRole("rowheader", { name: /Vehicle weight/ }).closest("tr")!;
+    expect(row.textContent).toMatch(/Esti/);
+  });
+
+  it("the run panel offers the same estimate", async () => {
+    renderApp();
+    await loadTlxWithoutWeight();
+    const alert = (await screen.findAllByRole("alert")).find((el) => el.textContent?.includes("must be fixed"))!;
+    fireEvent.click(within(alert).getByRole("button", { name: /Use estimated weight \(≈/ }));
+    expect(weightTag()).toBe("Estimated");
+  });
+
+  it("manual entry is labeled Manually entered and runs", async () => {
+    renderApp();
+    await loadTlxWithoutWeight();
+    fireEvent.click(within(await screen.findByTestId("weight-estimate")).getByRole("button", { name: "Enter manually" }));
+    expect(document.activeElement?.id).toBe("f-curbMassKg");
+    setField("f-curbMassKg", "3,800");
+    expect(fieldValue("f-curbMassKg")).toBe("3800");
+    expect(weightTag()).toBe("Manually entered");
+    fireEvent.click(runButton());
+    expect((await metricRow(/0–60 mph/)).textContent).toMatch(/\d\.\d\d/);
+  });
+
+  it("custom vehicles get a class estimate only after the user picks a vehicle type", async () => {
+    renderApp();
+    fireEvent.click(screen.getByRole("radio", { name: /Enter manually/ }));
+    fireEvent.change(screen.getByLabelText(/Vehicle name/), { target: { value: "Project car" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const card = await screen.findByTestId("weight-estimate");
+    expect(within(card).queryByRole("button", { name: "Use estimated weight" })).toBeNull();
+    setField("f-peakPowerKw", "300");
+    fireEvent.change(document.getElementById("f-drivetrain")!, { target: { value: "RWD" } });
+    expect(runButton().hasAttribute("disabled")).toBe(true); // no weight, no accepted estimate
+    fireEvent.change(within(card).getByLabelText(/Vehicle type for weight estimate/), { target: { value: "car-mid" } });
+    expect(card.textContent).toMatch(/Typical midsize car/);
+    fireEvent.click(within(card).getByRole("button", { name: "Use estimated weight" }));
+    expect(weightTag()).toBe("Estimated");
+    expect(runButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("a saved 1 lb weight from an older session is reset and reported", async () => {
+    const trim = allDatasetTrims().find((t) => t.year === 2015 && t.model === "C300" && t.drive === "rear wheel drive" && /^C 300 4dr/.test(t.description ?? ""))!;
+    const baseline = datasetTrimToSpecSet(trim);
+    const stock = { ...baseline, values: { ...baseline.values, curbMassKg: { value: 0.4536, provenance: "user" } } };
+    window.localStorage.setItem("autodyn:v3", JSON.stringify({ version: 3, config: { stock, modified: null, conditions: DEFAULT_CONDITIONS }, baseline, units: "imperial", messages: [] }));
+    renderApp();
+    expect(await screen.findByText(/1 saved value was physically invalid and reset/)).toBeTruthy();
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
+    expect(weightTag()).toBe("Verified");
+    expect(runButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("a weight typed now that is impossible is blocked with a restore action", async () => {
+    renderApp();
+    await loadC300();
+    setField("f-curbMassKg", "1");
+    expect(runButton().hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByText(/not a realistic curb weight/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Restore published weight \(3417 lb\)/ }));
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
+    expect(runButton().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("reset and vehicle switching never keep another vehicle's weight", async () => {
+    renderApp();
+    await loadC300();
+    setField("f-curbMassKg", "3300");
+    fireEvent.click(screen.getByRole("button", { name: /Reset configuration/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
+    setField("f-curbMassKg", "3300");
+    await loadTlxWithoutWeight();
+    fireEvent.click(await screen.findByRole("button", { name: "Replace" }));
+    await screen.findByTestId("weight-estimate");
+    expect(fieldValue("f-curbMassKg")).toBe("");
+  });
+
+  it("modified weight changes physics without touching stock, and follows stock corrections", async () => {
+    renderApp();
+    await loadC300();
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-curbMassKg", "-150");
+    expect(screen.getByText(/Modified: 3267 lb · Stock: 3417 lb/)).toBeTruthy();
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
+    setField("f-curbMassKg", "3500");
+    expect(screen.getByText(/Modified: 3350 lb · Stock: 3500 lb/)).toBeTruthy();
+    fireEvent.click(runButton());
+    const row = await metricRow(/Test mass/);
+    expect(row.textContent).toMatch(/3,676[\s\S]*3,526[\s\S]*−150/); // + 176 lb driver
+  });
+
+  it("weight converts between imperial and metric without changing the stored mass", async () => {
+    renderApp();
+    await loadTlxWithoutWeight();
+    const card = await screen.findByTestId("weight-estimate");
+    const lbText = card.textContent!.match(/≈ ([\d,]+) lb/)![1];
+    fireEvent.click(screen.getByRole("radio", { name: "Metric" }));
+    const kgText = screen.getByTestId("weight-estimate").textContent!.match(/≈ ([\d,]+) kg/)![1];
+    expect(Number(kgText.replace(/,/g, "")) / 0.45359237).toBeCloseTo(Number(lbText.replace(/,/g, "")), -1);
+    fireEvent.click(within(screen.getByTestId("weight-estimate")).getByRole("button", { name: "Use estimated weight" }));
+    const kg = Number(fieldValue("f-curbMassKg"));
+    fireEvent.click(screen.getByRole("radio", { name: "Imperial" }));
+    expect(Number(fieldValue("f-curbMassKg"))).toBeCloseTo(kg / 0.45359237, -1);
+  });
+});
+
 describe("rendering", () => {
   it("keyboard arrows move between workspaces", () => {
     renderApp();

@@ -58,8 +58,17 @@ function useRestore() {
       if (!state.config.modified?.overrides[key]) return null;
       return { label: "Use stock value", run: () => dispatch({ type: "resetField", scenario: "modified", key }) };
     }
-    const original = state.baseline?.values[key];
     const current = state.config.stock?.values[key];
+    const estimate = state.config.stock?.identity.weightEstimate;
+    if (key === "curbMassKg" && current?.value == null && estimate) {
+      const shown = `${Math.round(toDisplay("mass", estimate.kg, state.ui.units)).toLocaleString("en-US")} ${unitLabel("mass", state.ui.units)}`;
+      return {
+        label: `Use estimated weight (≈ ${shown})`,
+        run: () =>
+          dispatch({ type: "setStockValue", key, value: { value: estimate.kg, provenance: "estimated", source: "AutoDyn estimate", note: estimate.basis } }),
+      };
+    }
+    const original = state.baseline?.values[key];
     if (!original || !current || sameValue(original.value, current.value)) return null;
     if (original.value == null && (NUMERIC_FIELDS[key as NumericSpecKey]?.required ?? false)) return null;
     return { label: original.value == null ? "Use AutoDyn default" : "Restore source value", run: () => dispatch({ type: "resetField", scenario: "stock", key }) };
@@ -252,6 +261,12 @@ export default function ManualSetup() {
             }
           >
             Restored your previous session from this browser, including any values you edited.
+            {state.restoredFixes.length > 0 && (
+              <span className="mt-1 block text-caution">
+                {state.restoredFixes.length} saved value{state.restoredFixes.length > 1 ? "s were" : " was"} physically invalid and reset to the source data:{" "}
+                {state.restoredFixes.join(", ")}.
+              </span>
+            )}
           </Notice>
         )}
 

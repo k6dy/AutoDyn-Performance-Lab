@@ -5,6 +5,7 @@ import { buildAssistantContext } from "@/lib/ai/context";
 import type { AssistantErrorCode, AssistantResponse, AssistantStatus, DeploymentInfo, ProviderCode } from "@/lib/ai/types";
 import { AI_LIMITS, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { configSchema, specSetSchema } from "@/lib/domain/configSchema";
+import { sanitizeRestored } from "@/lib/domain/sanitize";
 import type { AnalysisConfig, SpecSet } from "@/lib/domain/types";
 import { runAnalysis } from "@/lib/physics/analysis";
 import { initialState, isStale, reducer, type Action, type AppState, type ChatMessage } from "@/state/reducer";
@@ -70,9 +71,12 @@ function readStorage(): Extract<Action, { type: "hydrate" }>["state"] | null {
           .map((m: ChatMessage) => ({ id: String(m.id), role: m.role, text: m.text.slice(0, 4000), createdAt: Number(m.createdAt) || 0, notices: Array.isArray(m.notices) ? m.notices.map(String) : undefined }))
           .slice(-40)
       : [];
+    const restoredBaseline = baseline?.success ? (baseline.data as SpecSet) : null;
+    const clean = sanitizeRestored(config.data as AnalysisConfig, restoredBaseline);
     return {
-      config: config.data as AnalysisConfig,
-      baseline: baseline?.success ? (baseline.data as SpecSet) : null,
+      config: clean.config,
+      sanitized: clean.fixed,
+      baseline: restoredBaseline,
       chat: { messages, proposals: {}, pending: null },
       units: data.units === "metric" ? "metric" : "imperial",
     };

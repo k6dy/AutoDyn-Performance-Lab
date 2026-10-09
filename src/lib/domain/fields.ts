@@ -75,9 +75,9 @@ export const NUMERIC_FIELDS: Record<NumericSpecKey, NumericFieldDef> = {
     help: "Time without drive per upshift. Dual-clutch ≈ 0.1 s, automatic ≈ 0.1–0.2 s, manual ≈ 0.3 s.",
   },
   curbMassKg: {
-    key: "curbMassKg", label: "Curb weight", quantity: "mass", section: "vehicle", tier: "basic",
+    key: "curbMassKg", label: "Vehicle weight (curb)", quantity: "mass", section: "vehicle", tier: "basic",
     hard: [50, 50000], typical: [700, 3500], required: true, estimable: false, digits: 0,
-    help: "Vehicle weight with fluids, without people. Required — AutoDyn never guesses weight.",
+    help: "Curb weight: the vehicle with fluids, without occupants or cargo. Needed for every simulation.",
   },
   payloadKg: {
     key: "payloadKg", label: "Driver & cargo", quantity: "mass", section: "vehicle", tier: "basic",
