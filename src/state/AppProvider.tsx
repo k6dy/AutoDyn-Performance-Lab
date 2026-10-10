@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { buildAssistantContext } from "@/lib/ai/context";
+import { buildAssistantContext, pendingProposalOf } from "@/lib/ai/context";
 import type { AssistantErrorCode, AssistantResponse, AssistantStatus, DeploymentInfo, ProviderCode } from "@/lib/ai/types";
 import { AI_LIMITS, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { autosave, replaceOriginal, saveAs as saveAsRecord, toActive } from "@/lib/persistence/autosave";
@@ -18,6 +18,7 @@ import {
   getConversations,
   MAX_CONVERSATION_MESSAGES,
   MAX_MESSAGE_TEXT,
+  OFFICIAL_SOURCE_URL,
   MemoryConversations,
   newConversationId,
   setConversations,
@@ -165,6 +166,8 @@ const toStored = (m: ChatMessage): StoredMessage => {
   if (m.kind) out.kind = m.kind;
   if (m.localKind) out.localKind = m.localKind;
   if (m.notices?.length) out.notices = m.notices.slice(0, 10);
+  const sources = m.sources?.filter((x) => OFFICIAL_SOURCE_URL.test(x.url)).slice(0, 5);
+  if (sources?.length) out.sources = sources;
   if (m.followUp) out.followUp = m.followUp;
   if (m.failed) out.failed = true;
   if (m.errorCode) out.errorCode = String(m.errorCode).slice(0, 40);
@@ -455,6 +458,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         createdAt: Date.now(),
         proposalId: body.proposal?.id,
         notices: body.notices,
+        ...(body.sources?.length ? { sources: body.sources } : {}),
         followUp: body.followUpQuestion,
         suggestedAction: body.suggestedAction,
         ...(body.local ? { kind: "local" as const } : {}),
@@ -485,7 +489,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (typeof navigator !== "undefined" && navigator.onLine === false) return fails("offline");
       inflightChats.current.add(conversationId);
       const s = latest.current;
-      const context = buildAssistantContext(s.config, s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null, s.ui.units);
+      const context = buildAssistantContext(s.config, s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null, s.ui.units, pendingProposalOf(Object.values(s.chat.proposals)));
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 30000);
       fetch("/api/assistant", {

@@ -1326,6 +1326,46 @@ describe("formatted assistant answers", () => {
   });
 });
 
+describe("verified sources under answers", () => {
+  it("show official links with retrieval dates, open safely, and survive a reload", async () => {
+    routes["/api/assistant"] = async (req) => {
+      if (req.method === "GET") return Response.json({ configured: true, model: "gemini-3.5-flash-lite", deployment, provider: null });
+      const raw = await req.json();
+      return Response.json({
+        ok: true,
+        requestId: raw.requestId,
+        reply: "EPA rates the 2018 F-Type R AWD Coupe at 18 mpg combined.",
+        followUpQuestion: null,
+        proposal: null,
+        suggestedAction: null,
+        notices: [],
+        sources: [
+          { label: "EPA fuel economy — 2018 Jaguar F-Type R AWD Coupe", url: "https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38709", retrieved: "2026-10-10" },
+          { label: "Not official", url: "https://example.com/x", retrieved: "2026-10-10" },
+        ],
+      });
+    };
+    const { unmount } = renderApp();
+    await openAssistant();
+    await ask("What's the MPG of a 2018 Jaguar F-Type R?");
+    const check = () => {
+      const box = within(chatLog()).getByTestId("answer-sources");
+      const links = within(box).getAllByRole("link");
+      expect(links).toHaveLength(1); // non-government links are never shown
+      expect(links[0].getAttribute("href")).toBe("https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38709");
+      expect(links[0].getAttribute("rel")).toBe("noopener noreferrer");
+      expect(links[0].getAttribute("target")).toBe("_blank");
+      expect(box.textContent).toMatch(/retrieved 2026-10-10/);
+    };
+    await waitFor(check);
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+    unmount();
+    renderApp();
+    await openAssistant();
+    await waitFor(check, { timeout: 5000 });
+  });
+});
+
 describe("chat persistence under slow storage", () => {
   it("switching chats while a write is in flight never drops the previous chat's latest messages", async () => {
     const base = new IndexedDbConversations(new IDBFactory());

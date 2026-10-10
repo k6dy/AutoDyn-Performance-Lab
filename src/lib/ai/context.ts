@@ -2,6 +2,7 @@
 // and the *actual* computed results. The model sees nothing else about the vehicle.
 
 import type { AssistantContext } from "@/lib/ai/schema";
+import type { Proposal } from "@/lib/ai/types";
 import { explainAnalysis } from "@/lib/analysis/explain";
 import { metricRows, rowDelta } from "@/lib/analysis/metrics";
 import { NUMERIC_FIELDS, SPEC_LABEL, SURFACE_OPTIONS } from "@/lib/domain/fields";
@@ -25,10 +26,26 @@ export function displaySpec(key: SpecKey, values: SpecValues, units: UnitSystem)
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** A proposal shown in the chat but not applied yet (nothing has been simulated for it). */
+export type PendingProposal = { vehicle: string | null; needsChoice: boolean; changes: string[] };
+
+/** The latest proposal of the open chat that is still waiting for Apply, in context form. */
+export function pendingProposalOf(states: { proposal: Proposal; status: string; selected: Record<string, boolean>; chosen: unknown }[]): PendingProposal | null {
+  const p = [...states].reverse().find((s) => s.status === "pending");
+  if (!p) return null;
+  const v = p.proposal.vehicle;
+  return {
+    vehicle: v ? v.label : null,
+    needsChoice: v?.kind === "choose" && !p.chosen,
+    changes: p.proposal.changes.filter((c) => p.selected[c.id] !== false).map((c) => `${SPEC_LABEL[c.key as SpecKey] ?? c.key} ${c.display}`),
+  };
+}
+
 export function buildAssistantContext(
   config: AnalysisConfig,
   result: { analysis: AnalysisResult; stale: boolean } | null,
   units: UnitSystem,
+  pending: PendingProposal | null = null,
 ): AssistantContext {
   const stock = config.stock;
   const values = effectiveValues(config, "stock");
@@ -64,6 +81,7 @@ export function buildAssistantContext(
       surface: SURFACE_OPTIONS.find((s) => s.value === config.conditions.surface)?.label ?? config.conditions.surface,
     },
     units,
+    pendingProposal: pending ? { vehicle: pending.vehicle ? clip(pending.vehicle, 160) : null, needsChoice: pending.needsChoice, changes: pending.changes.slice(0, 8).map((c) => clip(c, 120)) } : null,
     results: r
       ? {
           stale: result!.stale,

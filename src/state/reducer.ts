@@ -1,7 +1,7 @@
 // Application state. Pure reducer so behavior (mode switching, staleness, confirmation-gated AI
 // changes) is unit-testable without rendering.
 
-import type { AssistantErrorCode, Proposal, SuggestedAction } from "@/lib/ai/types";
+import type { Source, AssistantErrorCode, Proposal, SuggestedAction } from "@/lib/ai/types";
 import { resultsSummary } from "@/lib/analysis/summary";
 import { setModifiedValue, setStockValue } from "@/lib/domain/scenario";
 import type { AnalysisConfig, Conditions, ConstraintKey, ScenarioId, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
@@ -25,6 +25,8 @@ export type ChatMessage = {
   createdAt: number;
   proposalId?: string;
   notices?: string[];
+  /** Official sources for verified values in an assistant answer (shown as links with retrieval dates). */
+  sources?: Source[];
   errorCode?: AssistantErrorCode | string;
   followUp?: string | null;
   suggestedAction?: SuggestedAction;

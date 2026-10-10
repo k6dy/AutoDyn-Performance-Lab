@@ -189,10 +189,11 @@ describe("assistant request pipeline", () => {
     expect((limited.body as { retryAfterS?: number }).retryAfterS).toBeGreaterThan(0);
   });
 
-  it("strips HTML from replies and flags figures not present in AutoDyn data", async () => {
-    const model = respond(baseOutput({ intent: "explain", changes: [], reply: "<script>alert(1)</script>The C300 makes 255 hp and runs 0-60 in 5.1 s." }));
+  it("strips HTML from replies, flags figures not present in AutoDyn data and drops unbacked 0–60 claims", async () => {
+    const model = respond(baseOutput({ intent: "explain", changes: [], reply: "<script>alert(1)</script>The C300 makes 255 hp. It runs 0-60 in 5.1 s." }));
     const body = await ok(request("What horsepower does this vehicle have?"), deps(model));
     expect(body.reply).not.toMatch(/<script>/);
+    expect(body.reply).not.toMatch(/5\.1 s/); // no physics results exist yet
     expect(body.notices.join(" ")).toMatch(/255 hp/);
     expect(unverifiedFigures("It has 241 hp", "241 hp")).toEqual([]);
   });

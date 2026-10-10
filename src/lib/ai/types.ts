@@ -123,6 +123,9 @@ export const PROVIDER_MESSAGES: Record<AssistantErrorCode, string> = {
   offline: "You're offline. Your message was kept — retry when you're back online.",
 };
 
+/** A link shown under an answer for a verified value (official page, date AutoDyn retrieved it). */
+export type Source = { label: string; url: string; retrieved: string };
+
 export type AssistantResponse =
   | {
       ok: true;
@@ -134,6 +137,8 @@ export type AssistantResponse =
       notices: string[];
       /** Set when the server's relevance gate answered without calling the provider. */
       local?: LocalReplyKind;
+      /** Official sources for verified values used in the answer. */
+      sources?: Source[];
     }
   | { ok: false; requestId?: string; code: AssistantErrorCode; message: string; retryAfterS?: number };
 

@@ -5,7 +5,7 @@ import { clientKeyFrom, getRateLimiter } from "@/lib/ai/rateLimit.server";
 import type { AssistantStatus } from "@/lib/ai/types";
 import { allDatasetTrims, datasetSpecSet } from "@/lib/vehicles/dataset.server";
 import { nhtsaModels } from "@/lib/vehicles/nhtsa.server";
-import { lookupFuelEconomy, lookupRecalls } from "@/lib/vehicles/ownershipData.server";
+import { lookupFuelEconomy, lookupRecalls, lookupVariants } from "@/lib/vehicles/ownershipData.server";
 
 export const maxDuration = 30;
 
@@ -48,6 +48,7 @@ export async function POST(request: Request) {
     ownership: {
       fuelEconomy: (q, signal) => lookupFuelEconomy(q, { signal }),
       recalls: (q, signal) => lookupRecalls(q, { signal }),
+      variants: (q, signal) => lookupVariants(q, { signal }),
     },
   });
   const headers: Record<string, string> = { ...noStore };

@@ -21,6 +21,8 @@ export const contextSchema = z
     modifiedChanges: z.array(z.object({ field: shortText(60), stock: shortText(80), modified: shortText(80) })).max(30).nullable(),
     conditions: z.object({ temperature: shortText(30), elevation: shortText(30), surface: shortText(30) }),
     units: z.enum(["imperial", "metric"]),
+    /** Proposed but not applied: AutoDyn has not simulated it. */
+    pendingProposal: z.object({ vehicle: shortText(160).nullable(), needsChoice: z.boolean(), changes: z.array(shortText(120)).max(8) }).nullable().optional(),
     results: z
       .object({
         stale: z.boolean(),

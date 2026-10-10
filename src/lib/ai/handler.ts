@@ -6,11 +6,11 @@ import { buildChanges, cleanReply, clipText, completedPart, salvageReply, saniti
 import { modelOutputSchema, requestSchema, type AssistantRequest, type ModelOutput } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
 import { AI_LIMITS, PROVIDER_MESSAGES, SHORTENED_NOTICE } from "@/lib/ai/types";
-import { classifyRelevance, isInjection, localReply } from "@/lib/ai/relevance";
+import { gatherGrounding, sourcesOf, type OwnershipSources } from "@/lib/ai/grounding";
+import { stripUnbackedPerformance, stripUnverifiedMoney } from "@/lib/ai/guards";
+import { classifyRelevance, declineNote, isInjection, localReply } from "@/lib/ai/relevance";
 import { OUTPUT_BUDGET, planResponse } from "@/lib/ai/responsePlan";
-import { describeTopic, pinnedVehicles, type Topic } from "@/lib/ai/topic";
-import type { AspectId } from "@/lib/ai/lexicon";
-import type { FuelEconomyResult, RecallResult, VehicleQuery as LookupQuery } from "@/lib/vehicles/ownershipData.server";
+import { describeTopic } from "@/lib/ai/topic";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
@@ -28,50 +28,10 @@ export type AssistantDeps = {
   /** Builds a spec set for a matched trim (server attaches weight estimates). */
   specSetFor?: (trim: DatasetTrim) => SpecSet;
   nhtsaModels: (make: string, year: number) => Promise<string[]>;
-  /** Official free ownership data (EPA fuel economy, NHTSA recalls). Optional: without it the
-   *  assistant answers from general knowledge and says that verified figures weren't available. */
-  ownership?: {
-    fuelEconomy: (q: LookupQuery, signal: AbortSignal) => Promise<FuelEconomyResult>;
-    recalls: (q: LookupQuery, signal: AbortSignal) => Promise<RecallResult>;
-  };
+  /** Official free ownership data (EPA ratings and U.S. variant lists, NHTSA recalls). Optional:
+   *  without it the assistant answers from general knowledge and says verified figures weren't available. */
+  ownership?: OwnershipSources;
 };
-
-const FUEL_ASPECTS: (AspectId | null)[] = ["fuel_economy", "fuel_range", "ev_range"];
-const MY_VEHICLE = /\b(?:my|this|the current|our)\s+(?:\w+\s+){0,2}?(?:car|vehicle|ride|truck|build|setup)\b/i;
-
-/** Vehicles to look up: the one(s) the conversation pins down, else the Manual Setup vehicle when the user means it. */
-function lookupTargets(topic: Topic | null, context: AssistantRequest["context"], message: string): LookupQuery[] {
-  const pinned = pinnedVehicles(topic);
-  const v = context.vehicle;
-  const loaded = v ? { year: v.year, make: v.make, model: v.model } : null;
-  if (pinned.length) {
-    // "my C300": the model matches the loaded vehicle, which supplies the year.
-    return pinned.map((p) => (loaded && !p.year && loaded.make === p.make && loaded.model.toLowerCase() === p.model.toLowerCase() ? loaded : p));
-  }
-  if (loaded && (MY_VEHICLE.test(message) || topic?.models.some((m) => m.toLowerCase() === loaded.model.toLowerCase()))) return [loaded];
-  return [];
-}
-
-/** Verified data for this question, fetched only when its facet calls for it (no extra AI calls). */
-async function verifiedData(aspect: AspectId | null, targets: LookupQuery[], deps: AssistantDeps) {
-  if (!deps.ownership || !targets.length) return [];
-  const signal = AbortSignal.timeout(5000);
-  if (FUEL_ASPECTS.includes(aspect)) return Promise.all(targets.map((t) => deps.ownership!.fuelEconomy(t, signal).catch(() => null)));
-  if (aspect === "recalls" || aspect === "safety") return Promise.all(targets.map((t) => deps.ownership!.recalls(t, signal).catch(() => null)));
-  return [];
-}
-
-function sourceNotices(data: (FuelEconomyResult | RecallResult | null)[]) {
-  const out: string[] = [];
-  for (const d of data) {
-    if (d?.status !== "found") continue;
-    if ("variants" in d) {
-      const more = d.totalVariants - d.variants.length;
-      out.push(`Fuel economy from ${d.source}: official ratings for ${d.variants[0].label}${d.variants.length > 1 ? ` and ${d.variants.length - 1} other variant${d.variants.length > 2 ? "s" : ""}` : ""}${more > 0 ? ` (${more} more listed by EPA)` : ""}.`);
-    } else out.push(`Recalls from the ${d.source}: ${d.count} campaign${d.count === 1 ? "" : "s"} listed for the ${d.query}. Check a specific car by VIN at nhtsa.gov/recalls.`);
-  }
-  return out;
-}
 
 type Result = { status: number; body: AssistantResponse };
 
@@ -263,8 +223,11 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   // How deep and in what shape to answer is decided locally and sent with the one provider request.
   // Follow-ups include clearly automotive messages that build on the current subject ("Which ones are supercharged?").
   const isFollowUp = relevance.continues || relevance.outcome === "CONTEXTUAL_FOLLOWUP";
-  const plan = planResponse(req.message, { detail: req.detail, followUp: isFollowUp });
-  const external = (await verifiedData(relevance.aspect, lookupTargets(relevance.topic, req.context, req.message), deps)).filter((d): d is FuelEconomyResult | RecallResult => !!d);
+  // Mixed messages: only the automotive portion reaches the provider; the rest is declined locally.
+  const message = relevance.supported ?? req.message;
+  const plan = planResponse(message, { detail: req.detail, followUp: isFollowUp });
+  const userTexts = [...history.filter((h) => h.role === "user").map((h) => h.text), message];
+  const external = await gatherGrounding({ aspect: relevance.aspect, topic: relevance.topic, context: req.context, message, userTexts, sources: deps.ownership });
   const hints = {
     subject: describeTopic(relevance.topic),
     followUp: isFollowUp,
@@ -279,7 +242,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   let call: ModelCallResult;
   try {
     call = await Promise.race([
-      deps.callModel(buildContents({ ...req, history }, hints), controller.signal, { maxOutputTokens: OUTPUT_BUDGET[plan.depth] }),
+      deps.callModel(buildContents({ ...req, message, history }, hints), controller.signal, { maxOutputTokens: OUTPUT_BUDGET[plan.depth] }),
       new Promise<ModelCallResult>((resolve) => controller.signal.addEventListener("abort", () => resolve({ ok: false, code: "timeout" }))),
     ]);
   } catch {
@@ -345,24 +308,35 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   }
 
   const clipped = clipText(cleanReply(output.reply), AI_LIMITS.maxReplyChars);
-  const reply = clipped.text || (followUp ?? "I couldn't produce an answer for that. Try rephrasing, or use Manual Setup.");
+  let reply = clipped.text || (followUp ?? "I couldn't produce an answer for that. Try rephrasing, or use Manual Setup.");
   const notices: string[] = [];
   if (shortened || clipped.clipped) notices.push(SHORTENED_NOTICE);
+  // Everything AutoDyn or the user supplied: figures found here are not "invented".
   const known = `${JSON.stringify(req.context)} ${req.message} ${req.history.map((h) => h.text).join(" ")} ${
     vehicle && "specSet" in vehicle ? JSON.stringify(vehicle.specSet) : ""
   } ${kept.map((c) => c.display).join(" ")} ${JSON.stringify(external)}`;
-  notices.push(...sourceNotices(external));
-  const unverified = unverifiedFigures(reply, known);
-  const prices = unverified.filter((f) => f.includes("$"));
-  const figures = unverified.filter((f) => !f.includes("$"));
-  if (figures.length) {
-    notices.push(
-      output.intent === "general"
-        ? `General automotive knowledge, not AutoDyn data: figures such as ${figures.join(", ")} are typical values, not verified for a specific vehicle.`
-        : `This reply mentions figures that are not in AutoDyn's data for this session (${figures.join(", ")}). Treat them as unverified.`,
-    );
+
+  // Simulation state: performance claims need current physics results. A proposal (new or still
+  // pending) means nothing has been simulated for it yet.
+  const pending = proposal ?? (req.context.pendingProposal ? true : null);
+  const resultsCurrent = !!req.context.results && !req.context.results.stale && !pending;
+  if (!resultsCurrent && (pending || output.intent !== "general" || /\b(?:simulat|result)/i.test(reply))) {
+    const g = stripUnbackedPerformance(reply, known, { figures: !!pending || output.intent !== "general" });
+    if (g.removed) reply = g.text || "Nothing has been simulated yet, so there are no calculated results to report.";
   }
-  if (prices.length) notices.push(`Prices such as ${prices.join(", ")} are approximate general knowledge, not live market data. Check current listings or quotes for today's figures.`);
+  if (proposal) notices.push(nextStep(proposal));
+  else if (req.context.pendingProposal && ANALYSIS_INTENTS.includes(output.intent)) {
+    notices.push(req.context.pendingProposal.needsChoice ? "Not simulated yet: choose the exact variant in the pending proposal, then select Apply to Simulation." : "Not simulated yet: the proposal above is still waiting — select Apply to Simulation (or Cancel) to continue.");
+  }
+  // Dollar figures (market prices, insurance, repairs, fuel costs) only from data AutoDyn or the user supplied.
+  const money = stripUnverifiedMoney(reply, known);
+  if (money.removed) {
+    reply = money.text || "AutoDyn has no verified pricing for this, so it won't quote a figure.";
+    notices.push("Unverified dollar amounts were left out — AutoDyn has no live market, insurance or repair-price data.");
+  }
+  const figures = unverifiedFigures(reply, known).filter((f) => !f.includes("$"));
+  if (figures.length) notices.push(`Not verified by AutoDyn (general knowledge): ${figures.join(", ")}.`);
+  if (relevance.declined?.length) reply = `${reply}\n\n${declineNote(relevance.declined)}`;
   const feasibilityLines = req.context.results?.feasibility ?? [];
   if (feasibilityLines.length && contradictsFeasibility(reply, feasibilityLines)) {
     notices.push(
@@ -378,6 +352,15 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
 
   return {
     status: 200,
-    body: { ok: true, requestId: req.requestId, reply, followUpQuestion: followUp, proposal, suggestedAction, notices },
+    body: { ok: true, requestId: req.requestId, reply, followUpQuestion: followUp, proposal, suggestedAction, notices, sources: sourcesOf(external) },
   };
+}
+
+/** The exact next action for a new proposal — nothing is simulated until the user applies it. */
+function nextStep(p: Proposal) {
+  const v = p.vehicle;
+  if (v?.kind === "choose") return "Not simulated yet: choose the exact variant below, then select Apply to Simulation.";
+  if (v?.kind === "identify" || v?.kind === "not_found") return "Not simulated yet: AutoDyn needs the missing specifications listed below before it can run.";
+  if (!p.changes.length && !v) return "Not simulated yet: nothing in this request can be applied — see the notes below.";
+  return "Not simulated yet: review the proposed changes below and select Apply to Simulation to run the physics engine.";
 }

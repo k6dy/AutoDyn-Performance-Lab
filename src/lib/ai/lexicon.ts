@@ -146,7 +146,7 @@ export const ASPECTS: { id: AspectId; label: string; re: RegExp; clarify: string
   {
     id: "fuel_economy",
     label: "fuel economy",
-    re: /\b(?:mpge?|fuel (?:economy|efficiency|consumption|costs?|bill)|gas (?:mileage|money|costs?|bill)|miles per gallon|l\/100 ?km|km\/l|(?:city|highway|combined) (?:mpg|mileage|rating|economy)|(?:need|needs|take|takes|run on|runs on|use|uses|require|requires) (?:premium|regular|diesel|e85)|premium (?:fuel|gas|unleaded)|octane|cost to fill|thirsty|guzzl\w*)\b/,
+    re: /\b(?:mpge?|fuel (?:economy|efficiency|consumption|costs?|bill)|gas (?:mileage|money|costs?|bill)|miles per gallon|l\/100 ?km|km\/l|(?:city|highway|combined) (?:mpg|mileage|rating|economy)|(?:need|needs|take|takes|run on|runs on|use|uses|require|requires) (?:premium|regular|diesel|e85)|premium (?:fuel|gas|unleaded)|octane|cost to fill|thirsty|guzzl\w*|(?:per|a) (?:gal|gallon|litre|liter)|(?:gas|fuel|petrol) (?:price|prices|is \$)|price of (?:gas|fuel|petrol))\b|\/gal\b/,
     clarify: "Which vehicle's fuel economy do you mean? Include the year, make and model (and the engine if it had several).",
   },
   {

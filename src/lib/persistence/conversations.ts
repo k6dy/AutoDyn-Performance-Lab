@@ -24,6 +24,8 @@ export type StoredMessage = {
   /** For local replies: why the gate answered without the provider (clarify turns stay in context). */
   localKind?: "clarify" | "off_topic" | "injection" | "small_talk";
   notices?: string[];
+  /** Official sources shown under the answer (EPA / NHTSA pages, retrieval date). */
+  sources?: { label: string; url: string; retrieved: string }[];
   followUp?: string | null;
   /** User message whose request failed; kept for retry, never sent as history. */
   failed?: boolean;
@@ -57,6 +59,10 @@ export type Conversation = ConversationMeta & {
 const ID = /^[A-Za-z0-9_-]{6,80}$/;
 const iso = z.string().max(40).refine((s) => !Number.isNaN(Date.parse(s)), "invalid date");
 
+type StoredSource = { label: string; url: string; retrieved: string };
+export const OFFICIAL_SOURCE_URL = /^https:\/\/(?:www\.)?(?:fueleconomy\.gov|nhtsa\.gov)\//;
+const sourceSchema = z.object({ label: z.string().max(200), url: z.string().max(300).regex(OFFICIAL_SOURCE_URL), retrieved: z.string().max(24) });
+
 export const storedMessageSchema = z.object({
   id: z.string().min(1).max(100),
   role: z.enum(["user", "assistant"]),
@@ -65,6 +71,12 @@ export const storedMessageSchema = z.object({
   kind: z.enum(["results", "local"]).optional(),
   localKind: z.enum(["clarify", "off_topic", "injection", "small_talk"]).optional(),
   notices: z.array(z.string().max(600)).max(10).optional(),
+  // Only official government pages are kept, so a restored record can't carry arbitrary links; an
+  // invalid entry is dropped without discarding the conversation.
+  sources: z
+    .array(z.unknown())
+    .transform((xs) => xs.flatMap((x) => (sourceSchema.safeParse(x).success ? [x as StoredSource] : [])).slice(0, 5))
+    .optional(),
   followUp: z.string().max(400).nullable().optional(),
   failed: z.boolean().optional(),
   errorCode: z.string().max(40).optional(),

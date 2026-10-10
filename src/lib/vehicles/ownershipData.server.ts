@@ -25,7 +25,8 @@ export const defaultFetcher: JsonFetcher = async (url, signal) => {
   return text.trim() ? JSON.parse(text) : null; // EPA answers "null" when nothing matches
 };
 
-export type VehicleQuery = { year: number | null; make: string; model: string };
+/** prefer: drivetrain/body words the user mentioned ("AWD", "coupe") to pick the matching EPA variants. */
+export type VehicleQuery = { year: number | null; make: string; model: string; prefer?: string[] };
 
 // ---- Cache (per server instance; both sources change rarely) ------------------------------------
 
@@ -54,7 +55,7 @@ const num = (v: unknown) => {
   return Number.isFinite(n) && n > 0 ? n : null;
 };
 
-// ---- EPA fuel economy ------------------------------------------------------------------------
+// ---- EPA fuel economy and U.S. variant lists -----------------------------------------------
 
 const menuItem = z.object({ text: z.string().max(200), value: z.string().max(200) });
 const menuSchema = z.object({ menuItem: z.union([menuItem, z.array(menuItem)]) }).nullable();
@@ -67,7 +68,6 @@ const vehicleSchema = z.object({
   highway08: z.coerce.string().optional(),
   comb08: z.coerce.string().optional(),
   fuelType: z.string().optional(),
-  fuelCost08: z.coerce.string().optional(),
   range: z.coerce.string().optional(),
   combE: z.coerce.string().optional(),
   drive: z.string().optional(),
@@ -81,14 +81,48 @@ const menu = (raw: unknown) => {
   return Array.isArray(m.data.menuItem) ? m.data.menuItem : [m.data.menuItem];
 };
 
+const AWD_WORDS = ["awd", "xdrive", "4matic", "quattro", "4wd", "4x4", "shawd", "allwheel"];
+const TWO_WD_WORDS = ["rwd", "fwd", "2wd"];
+const BODY_WORDS = ["coupe", "convertible", "sedan", "wagon", "hatchback", "cabriolet", "roadster", "sportbrake"];
+
+/**
+ * EPA model names that match the query's words, narrowed by the drivetrain and body the user
+ * mentioned ("AWD", "coupe"). EPA often encodes these in the model name ("M340i xDrive", "F-Type R
+ * AWD Coupe"), so a 2WD request never picks an AWD rating and vice versa.
+ */
+function matchModels(names: string[], model: string, prefer: string[]) {
+  const want = tokens(model);
+  let models = names.map((name) => ({ name, words: tokens(name) })).filter((m) => want.every((w) => m.words.includes(w)));
+  const p = prefer.map((x) => compact(x));
+  const isAwd = (words: string[]) => words.some((w) => AWD_WORDS.includes(w));
+  if (p.some((x) => AWD_WORDS.includes(x))) {
+    const awd = models.filter((m) => isAwd(m.words));
+    if (awd.length) models = awd;
+  } else if (p.some((x) => TWO_WD_WORDS.includes(x))) {
+    const two = models.filter((m) => !isAwd(m.words));
+    if (two.length) models = two;
+  }
+  const body = p.find((x) => BODY_WORDS.includes(x));
+  if (body) {
+    const b = models.filter((m) => m.words.includes(body));
+    if (b.length) models = b;
+  }
+  return models.sort((a, b) => a.words.length - b.words.length);
+}
+
+async function epaMake(year: number, make: string, get: (path: string) => Promise<unknown>) {
+  return menu(await get(`/vehicle/menu/make?year=${year}`)).find((m) => compact(m.value) === compact(make))?.value ?? null;
+}
+
+const optionsPath = (year: number, make: string, model: string) => `/vehicle/menu/options?year=${year}&make=${encodeURIComponent(make)}&model=${encodeURIComponent(model)}`;
+const sbs = (id: string) => `https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=${id}`;
+
 export type FuelEconomyVariant = {
   label: string;
   cityMpg: number | null;
   highwayMpg: number | null;
   combinedMpg: number | null;
   fuel: string | null;
-  /** EPA's own estimate (15,000 mi/yr, 55% city, EPA's current fuel-price assumption). */
-  epaAnnualFuelCostUsd: number | null;
   electricRangeMiles: number | null;
   kwhPer100Miles: number | null;
   drive: string | null;
@@ -97,42 +131,39 @@ export type FuelEconomyVariant = {
 };
 
 export type FuelEconomyResult =
-  | { status: "found"; source: string; query: string; variants: FuelEconomyVariant[]; totalVariants: number }
+  | { status: "found"; source: string; query: string; retrieved: string; variants: FuelEconomyVariant[]; totalVariants: number }
   | { status: "needs_year" | "not_found" | "unavailable"; source: string; query: string; note: string };
 
 /**
- * Official EPA ratings for a model year, make and model. Matches the model by its words ("F-Type
- * R" → "F-Type R AWD Coupe"), returns up to `maxVariants` engine/transmission variants and how many
- * exist in total.
+ * Official EPA ratings for a model year, make and model: the matched variants (engine,
+ * transmission, drivetrain), up to `maxVariants`, and how many exist in total.
  */
 export async function lookupFuelEconomy(q: VehicleQuery, opts: { fetcher?: JsonFetcher; signal?: AbortSignal; maxVariants?: number } = {}): Promise<FuelEconomyResult> {
   const fetcher = opts.fetcher ?? defaultFetcher;
   const query = `${q.year ?? ""} ${q.make} ${q.model}`.trim();
   if (!yearOk(q.year)) return { status: "needs_year", source: EPA_SOURCE, query, note: "EPA ratings are per model year; the model year is needed." };
   const year = q.year;
+  const prefer = q.prefer ?? [];
   const signal = AbortSignal.any([AbortSignal.timeout(4500), ...(opts.signal ? [opts.signal] : [])]);
   const get = (path: string) => fetcher(`${EPA}${path}`, signal);
   return cached(
-    `epa:${year}:${compact(q.make)}:${compact(q.model)}`,
+    `epa:${year}:${compact(q.make)}:${compact(q.model)}:${prefer.map(compact).sort().join(",")}`,
     async (): Promise<FuelEconomyResult> => {
       try {
-        const makes = menu(await get(`/vehicle/menu/make?year=${year}`));
-        const make = makes.find((m) => compact(m.value) === compact(q.make))?.value;
+        const make = await epaMake(year, q.make, get);
         if (!make) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no ${q.make} vehicles for ${year}.` };
-        const want = tokens(q.model);
-        const models = menu(await get(`/vehicle/menu/model?year=${year}&make=${encodeURIComponent(make)}`))
-          .map((m) => ({ name: m.value, words: tokens(m.value) }))
-          .filter((m) => want.every((w) => m.words.includes(w)))
-          .sort((a, b) => a.words.length - b.words.length)
-          .slice(0, 3);
+        const models = matchModels(
+          menu(await get(`/vehicle/menu/model?year=${year}&make=${encodeURIComponent(make)}`)).map((m) => m.value),
+          q.model,
+          prefer,
+        ).slice(0, 3);
         if (!models.length) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA has no ${year} ${make} model matching “${q.model}”.` };
-        const options = await Promise.all(
-          models.map(async (m) => menu(await get(`/vehicle/menu/options?year=${year}&make=${encodeURIComponent(make)}&model=${encodeURIComponent(m.name)}`)).map((o) => ({ model: m.name, option: o.text, id: o.value }))),
-        );
+        const options = await Promise.all(models.map(async (m) => menu(await get(optionsPath(year, make, m.name))).map((o) => ({ model: m.name, option: o.text, id: o.value }))));
         const total = options.reduce((n, o) => n + o.length, 0);
         // Round-robin across matched models so coupe and convertible (or AWD and RWD) both show.
+        const max = opts.maxVariants ?? 4;
         const picked: { model: string; option: string; id: string }[] = [];
-        for (let i = 0; picked.length < (opts.maxVariants ?? 4) && options.some((o) => o[i]); i++) for (const o of options) if (o[i] && picked.length < (opts.maxVariants ?? 4)) picked.push(o[i]);
+        for (let i = 0; picked.length < max && options.some((o) => o[i]); i++) for (const o of options) if (o[i] && picked.length < max) picked.push(o[i]);
         if (!/^\d+$/.test(picked[0]?.id ?? "")) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no variants for ${year} ${make} ${q.model}.` };
         const variants = await Promise.all(
           picked.map(async (p): Promise<FuelEconomyVariant | null> => {
@@ -146,18 +177,60 @@ export async function lookupFuelEconomy(q: VehicleQuery, opts: { fetcher?: JsonF
               highwayMpg: ev ? null : num(v.data.highway08),
               combinedMpg: ev ? null : num(v.data.comb08),
               fuel: v.data.fuelType ?? null,
-              epaAnnualFuelCostUsd: num(v.data.fuelCost08),
               electricRangeMiles: num(v.data.range),
               kwhPer100Miles: num(v.data.combE),
               drive: v.data.drive ?? null,
               transmission: v.data.trany ?? null,
-              url: `https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=${p.id}`,
+              url: sbs(p.id),
             };
           }),
         );
         const found = variants.filter((v): v is FuelEconomyVariant => !!v);
         if (!found.length) return { status: "unavailable", source: EPA_SOURCE, query, note: "EPA vehicle records could not be read." };
-        return { status: "found", source: EPA_SOURCE, query, variants: found, totalVariants: total };
+        return { status: "found", source: EPA_SOURCE, query, retrieved: new Date().toISOString(), variants: found, totalVariants: total };
+      } catch {
+        return { status: "unavailable", source: EPA_SOURCE, query, note: "fueleconomy.gov did not respond in time." };
+      }
+    },
+    (r) => r.status !== "unavailable",
+  );
+}
+
+export type VariantListResult =
+  | { status: "found"; source: string; query: string; retrieved: string; note: string; models: { name: string; versions: string[] }[]; url: string }
+  | { status: "needs_year" | "not_found" | "unavailable"; source: string; query: string; note: string };
+
+/**
+ * Every EPA-listed U.S. version of a model for one model year (model names often carry the
+ * drivetrain and body: "M4 Competition xDrive Coupe"), with engine/transmission options. Grounds
+ * availability questions ("Was the 2021 M4 offered with xDrive?") in what was actually sold.
+ */
+export async function lookupVariants(q: VehicleQuery, opts: { fetcher?: JsonFetcher; signal?: AbortSignal } = {}): Promise<VariantListResult> {
+  const fetcher = opts.fetcher ?? defaultFetcher;
+  const query = `${q.year ?? ""} ${q.make} ${q.model}`.trim();
+  if (!yearOk(q.year)) return { status: "needs_year", source: EPA_SOURCE, query, note: "Versions differ by model year; the model year is needed." };
+  const year = q.year;
+  const signal = AbortSignal.any([AbortSignal.timeout(4500), ...(opts.signal ? [opts.signal] : [])]);
+  const get = (path: string) => fetcher(`${EPA}${path}`, signal);
+  return cached(
+    `epa-variants:${year}:${compact(q.make)}:${compact(q.model)}`,
+    async (): Promise<VariantListResult> => {
+      try {
+        const make = await epaMake(year, q.make, get);
+        if (!make) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no ${q.make} vehicles for ${year}.` };
+        const models = matchModels(menu(await get(`/vehicle/menu/model?year=${year}&make=${encodeURIComponent(make)}`)).map((m) => m.value), q.model, []).slice(0, 8);
+        if (!models.length) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no ${year} ${make} model matching “${q.model}” (U.S. market).` };
+        const withOptions = await Promise.all(models.map(async (m) => ({ name: m.name, options: menu(await get(optionsPath(year, make, m.name))) })));
+        const firstId = withOptions.flatMap((m) => m.options).find((o) => /^\d+$/.test(o.value))?.value;
+        return {
+          status: "found",
+          source: EPA_SOURCE,
+          query: `${year} ${make} ${q.model}`,
+          retrieved: new Date().toISOString(),
+          note: "Complete list of U.S. versions EPA rated for this model year; a drivetrain, body or engine missing here was not sold in the U.S. that year.",
+          models: withOptions.map((m) => ({ name: m.name, versions: m.options.map((o) => o.text).slice(0, 6) })),
+          url: firstId ? sbs(firstId) : "https://www.fueleconomy.gov/feg/findacar.shtml",
+        };
       } catch {
         return { status: "unavailable", source: EPA_SOURCE, query, note: "fueleconomy.gov did not respond in time." };
       }
@@ -183,7 +256,7 @@ const recallSchema = z.object({
 });
 
 export type RecallResult =
-  | { status: "found"; source: string; query: string; count: number; recalls: { campaign: string; reported: string | null; component: string | null; summary: string }[]; url: string }
+  | { status: "found"; source: string; query: string; retrieved: string; count: number; recalls: { campaign: string; reported: string | null; component: string | null; summary: string }[]; url: string }
   | { status: "none" | "needs_year" | "unavailable"; source: string; query: string; note: string };
 
 /** Recall campaigns for a model year; retries without trim words (NHTSA lists "F-Type", not "F-Type R"). */
@@ -207,6 +280,7 @@ export async function lookupRecalls(q: VehicleQuery, opts: { fetcher?: JsonFetch
               status: "found",
               source: RECALL_SOURCE,
               query: `${year} ${q.make} ${name}`,
+              retrieved: new Date().toISOString(),
               count: r.data.Count,
               recalls: r.data.results.slice(0, opts.max ?? 5).map((x) => ({
                 campaign: x.NHTSACampaignNumber,

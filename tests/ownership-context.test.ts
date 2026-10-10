@@ -31,15 +31,17 @@ const EPA_FOUND = (label: string): FuelEconomyResult => ({
   status: "found",
   source: "U.S. EPA fueleconomy.gov",
   query: label,
+  retrieved: "2026-10-10T00:00:00.000Z",
   totalVariants: 2,
   variants: [
-    { label: `${label} — Auto (S8), 8 cyl, 5.0 L, Sup Charg`, cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", epaAnnualFuelCostUsd: 4550, electricRangeMiles: null, kwhPer100Miles: null, drive: "All-Wheel Drive", transmission: "Automatic (S8)", url: "https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38709" },
+    { label: `${label} — Auto (S8), 8 cyl, 5.0 L, Sup Charg`, cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", electricRangeMiles: null, kwhPer100Miles: null, drive: "All-Wheel Drive", transmission: "Automatic (S8)", url: "https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38709" },
   ],
 });
 const RECALLS_FOUND: RecallResult = {
   status: "found",
   source: "NHTSA recalls database",
   query: "2018 Jaguar F-Type",
+  retrieved: "2026-10-10T00:00:00.000Z",
   count: 3,
   recalls: [{ campaign: "17V341000", reported: "25/05/2017", component: "EXTERIOR LIGHTING:TURN SIGNAL", summary: "Turn signal reminder does not flash faster." }],
   url: "https://www.nhtsa.gov/recalls?year=2018&make=Jaguar&model=F-Type",
@@ -106,14 +108,14 @@ describe("contextual ownership follow-ups reach Gemini with the right subject", 
       ["What's the MPG?", /SUBJECT .*: BMW M340i/, /FOCUS: this question is about fuel economy[\s\S]*"status":"needs_year"/],
       ["Highway?", /SUBJECT .*: BMW M340i/, /FOCUS: this question is about fuel economy/],
       ["Is insurance expensive?", /SUBJECT .*: BMW M340i/, /FOCUS: this question is about insurance\. .*no premium figures/],
-      ["How much are they used?", /SUBJECT .*: BMW M340i/, /FOCUS: this question is about purchase price\. .*no live data/],
+      ["How much are they used?", /SUBJECT .*: BMW M340i/, /FOCUS: this question is about purchase price\. .*no live market data/],
       ["What about a 2022?", /SUBJECT .*: 2022 BMW M340i/],
       ["Which would you recommend?", /SUBJECT .*: 2022 BMW M340i[\s\S]*Recommendation: reason from the trade-offs/],
     ]);
     // Without a model year EPA can't answer (the model is told to ask); once 2022 is set, MPG questions use EPA data.
     expect(h.fuelEconomy.mock.calls.every(([q]) => q.year === null)).toBe(true);
     const mpg = await h.say("And the MPG for that year?");
-    expect(h.fuelEconomy).toHaveBeenCalledWith({ year: 2022, make: "BMW", model: "M340i" }, expect.anything());
+    expect(h.fuelEconomy).toHaveBeenCalledWith(expect.objectContaining({ year: 2022, make: "BMW", model: "M340i" }), expect.anything());
     expect(mpg.turn).toMatch(/VERIFIED EXTERNAL DATA[\s\S]*"cityMpg":15/);
   });
 
@@ -172,7 +174,7 @@ describe("contextual ownership follow-ups reach Gemini with the right subject", 
       ["Which is more reliable?", /SUBJECT .*: F-Type R vs M4/, /reliability for each vehicle being compared/],
     ];
     await expectConversation(steps, h);
-    expect(h.fuelEconomy).toHaveBeenCalledWith({ year: 2018, make: "Jaguar", model: "F-Type R" }, expect.anything());
+    expect(h.fuelEconomy).toHaveBeenCalledWith(expect.objectContaining({ year: 2018, make: "Jaguar", model: "F-Type R" }), expect.anything());
     const calls = h.model.mock.calls.length;
     const cows = await h.say("Do cows hibernate?");
     expect(cows.body.local).toBe("off_topic");
@@ -250,7 +252,7 @@ describe("ambiguity and specific clarification", () => {
       expect(r.body.local, q).toBeUndefined();
       expect(r.turn, q).toMatch(re);
     }
-    expect(h.recalls).toHaveBeenCalledWith({ year: 2018, make: "Jaguar", model: "F-Type R" }, expect.anything());
+    expect(h.recalls).toHaveBeenCalledWith(expect.objectContaining({ year: 2018, make: "Jaguar", model: "F-Type R" }), expect.anything());
   });
 });
 
@@ -282,22 +284,24 @@ describe("clearly unrelated requests stay blocked — zero provider calls", () =
 });
 
 describe("verified data and honest labelling", () => {
-  it("EPA figures are attributed and not flagged; invented MPG figures and prices are", async () => {
+  it("EPA figures carry source links and are not flagged; invented MPG figures are flagged and invented prices removed", async () => {
     const h = harness();
     await h.say("Tell me about the 2018 Jaguar F-Type R.");
     const ok = await h.say("What's the MPG?", "EPA rates it 15 city / 23 highway mpg (18 combined) on premium.");
-    expect(ok.body.notices.join(" ")).toMatch(/Fuel economy from U\.S\. EPA fueleconomy\.gov: official ratings for 2018 Jaguar F-Type R/);
-    expect(ok.body.notices.join(" ")).not.toMatch(/23 highway mpg|typical values/);
-    const guess = await h.say("How much are they used?", "Expect around $55,000 and roughly 25 mpg.");
-    expect(guess.body.notices.join(" ")).toMatch(/\$55,000.*approximate general knowledge, not live market data/);
-    expect(guess.body.notices.join(" ")).toMatch(/25 mpg/);
+    expect(ok.body.sources?.[0]).toMatchObject({ label: expect.stringMatching(/^EPA fuel economy — 2018 Jaguar F-Type R/), url: expect.stringMatching(/^https:\/\/www\.fueleconomy\.gov\//), retrieved: "2026-10-10" });
+    expect(ok.body.notices.join(" ")).not.toMatch(/23|mpg/);
+    const guess = await h.say("How much are they used?", "Used prices vary with mileage. Expect around $55,000 for a clean one. It also gets roughly 25 mpg.");
+    expect(guess.body.reply).not.toMatch(/\$55,000/);
+    expect(guess.body.reply).toMatch(/Used prices vary with mileage\./);
+    expect(guess.body.notices.join(" ")).toMatch(/Unverified dollar amounts were left out/);
+    expect(guess.body.notices.join(" ")).toMatch(/Not verified by AutoDyn.*25 mpg/);
   });
 
   it("asking about my loaded car uses the Manual Setup vehicle for the EPA lookup", async () => {
     const h = harness({ hasVehicle: true });
     const r = await h.say("What's the MPG of my car?");
     expect(r.body.local).toBeUndefined();
-    expect(h.fuelEconomy).toHaveBeenCalledWith({ year: 2015, make: "Mercedes-Benz", model: "C300" }, expect.anything());
+    expect(h.fuelEconomy).toHaveBeenCalledWith(expect.objectContaining({ year: 2015, make: "Mercedes-Benz", model: "C300" }), expect.anything());
   });
 
   it("ownership questions never become simulation proposals; modification requests still do", async () => {
@@ -374,7 +378,7 @@ describe("official data sources (mocked HTTP)", () => {
     const r = await lookupFuelEconomy({ year: 2018, make: "jaguar", model: "F-Type R" }, { fetcher });
     expect(r).toMatchObject({ status: "found", totalVariants: 1 });
     if (r.status !== "found") throw new Error();
-    expect(r.variants[0]).toMatchObject({ cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", epaAnnualFuelCostUsd: 4550, electricRangeMiles: null });
+    expect(r.variants[0]).toMatchObject({ cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", electricRangeMiles: null });
     expect(r.variants[0].label).toMatch(/2018 Jaguar F-Type R AWD Coupe — Auto \(S8\)/);
     const n = (fetcher as ReturnType<typeof vi.fn>).mock.calls.length;
     await lookupFuelEconomy({ year: 2018, make: "Jaguar", model: "F-Type R" }, { fetcher });

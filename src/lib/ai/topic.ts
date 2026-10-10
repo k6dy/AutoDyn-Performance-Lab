@@ -121,8 +121,10 @@ function displayModel(w: string) {
     .join("-"); // f-type → F-Type, xjr → XJR
 }
 
+const TRIM_DISPLAY: Record<string, string> = { xdrive: "xDrive", "4matic": "4MATIC", quattro: "quattro", "type-r": "Type R" };
+
 function trimLabel(w: string) {
-  return ACRONYM.has(w) || w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1);
+  return TRIM_DISPLAY[w] ?? (ACRONYM.has(w) || w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1));
 }
 
 /** Can `w` (original spelling `orig`) be a model name right after a manufacturer? */

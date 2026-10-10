@@ -15,7 +15,7 @@ import { AI_LIMITS, AI_UNAVAILABLE_MESSAGE, isBlocking, PROVIDER_MESSAGES } from
 import { SPEC_LABEL } from "@/lib/domain/fields";
 import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
 import type { SpecKey } from "@/lib/domain/types";
-import { MAX_CONVERSATION_MESSAGES } from "@/lib/persistence/conversations";
+import { MAX_CONVERSATION_MESSAGES, OFFICIAL_SOURCE_URL } from "@/lib/persistence/conversations";
 import { getRepository } from "@/lib/persistence/repository";
 import { vehicleKey } from "@/lib/persistence/snapshot";
 import { vehicleLabel } from "@/lib/vehicles/normalize";
@@ -161,6 +161,23 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
           {n}
         </p>
       ))}
+      {m.sources?.some((s) => OFFICIAL_SOURCE_URL.test(s.url)) && (
+        <div className="text-xs leading-5 text-faint" data-testid="answer-sources">
+          <span className="font-medium text-muted">Sources</span>
+          <ul className="mt-0.5 space-y-0.5">
+            {m.sources
+              .filter((s) => OFFICIAL_SOURCE_URL.test(s.url))
+              .map((s) => (
+                <li key={s.url} className="[overflow-wrap:anywhere]">
+                  <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-muted underline decoration-line-strong underline-offset-2 hover:text-ink">
+                    {s.label}
+                  </a>{" "}
+                  · retrieved {s.retrieved}
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         {m.errorCode && (
           <Button size="sm" onClick={() => dispatch({ type: "setMode", mode: "manual" })}>
