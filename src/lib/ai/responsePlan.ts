@@ -103,12 +103,6 @@ export function splitParts(message: string): string[] {
   return out.length >= 2 ? out.slice(0, MAX_PARTS) : [];
 }
 
-/** True for messages that only ask to change the depth or framing of the previous answer. */
-export function isDepthRequest(message: string) {
-  const t = message.trim();
-  return words(t) <= 12 && (MORE.test(t) || LESS.test(t) || BEGINNER.test(t) || /^(?:give me |explain )?(?:the )?(?:technical|engineering|physics)(?: explanation| version| side| details?)?\W*$/i.test(t));
-}
-
 function listCount(text: string) {
   return (text.match(/,/g)?.length ?? 0) + (/\band\b/i.test(text) ? 1 : 0) + 1;
 }

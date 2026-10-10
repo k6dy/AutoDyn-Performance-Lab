@@ -2,21 +2,32 @@
 // in the assistant API route before any provider call, so clearly off-topic requests never spend
 // Gemini quota. No network and no model are used to classify.
 //
-// Layers: (1) role-change attempts, (2) small talk, (3) explicit off-topic evidence, (4) answers to
-// our own clarifying question, (5) ambiguous names (Jaguar the car vs the animal), (6) automotive
-// evidence, (7) follow-ups that refer to the conversation's tracked subject (topic.ts), (8) a
-// subject-aware clarifying question, (9) off-topic.
+// Outcomes: CLEARLY AUTOMOTIVE ("AUTOMOTIVE") and CONTEXTUAL AUTOMOTIVE ("CONTEXTUAL_FOLLOWUP") may
+// reach the provider; AMBIGUOUS gets a short, specific local clarification; CLEARLY OFF-TOPIC
+// ("OFF_TOPIC") is rejected locally.
+//
+// Layers: (1) role-change attempts, (2) small talk, (3) explicit off-topic evidence — an off-topic
+// *task* (poem, homework) always, an off-topic *topic* (weather, finance) only when automotive
+// evidence doesn't outweigh it ("How does cold weather affect MPG?" is automotive), (4) answers to
+// our own clarifying question, (5) ambiguous names (Jaguar the car vs the animal), (6) clear
+// automotive evidence — clarified locally when it needs a referent the conversation doesn't have
+// ("What's the MPG?" in a new chat), (7) everything else inside an established automotive context
+// is a contextual follow-up unless it is clearly about something else (questions about the
+// assistant itself, a foreign named subject), (8) without context: a facet-specific clarification
+// or a rejection.
+//
+// The conversation context (topic.ts) is what makes short follow-ups ("What is the pricing?",
+// "How much are they used?") answerable; their wording does not need to be in any list.
 //
 // Limitations (documented in the README): it is a heuristic, not language understanding. Unusual
 // slang or rare model names in a terse first message may be asked to clarify; an off-topic
-// question with no off-topic vocabulary that reads as a follow-up inside a car conversation can
-// reach the provider, whose system instruction keeps it in scope; creative tasks that merely
-// mention a car are rejected.
+// question with no off-topic vocabulary inside a car conversation can reach the provider, whose
+// system instruction keeps it in scope; creative tasks that merely mention a car are rejected.
 
 import {
   AMBIGUOUS_NAMES,
-  FOLLOW_UP_MARKERS,
   INJECTION_PATTERNS,
+  MAKE_NAMES,
   MAKES,
   MEDIUM_WORDS,
   MODELS,
@@ -25,9 +36,11 @@ import {
   SMALL_TALK,
   STRONG_PHRASES,
   STRONG_WORDS,
+  TASK_OFF_PHRASES,
+  TASK_OFF_WORDS,
+  type AspectId,
 } from "@/lib/ai/lexicon";
-import { isDepthRequest } from "@/lib/ai/responsePlan";
-import { deriveTopic, type Topic } from "@/lib/ai/topic";
+import { aspectClarify, deriveTopic, extractTopic, hasContext, hasSubject, needsReferent, pointsAtThing, referenceCue, type Topic } from "@/lib/ai/topic";
 
 export const OFF_TOPIC_REPLY = "I'm here for cars, parts, and vehicle performance. Ask me something automotive-related.";
 /** Last-resort clarification when no subject can be inferred. */
@@ -51,6 +64,10 @@ export type Relevance = {
   score: number;
   /** The conversation's subject after this message (null when none is established). */
   topic: Topic | null;
+  /** Facet this message asks about (its own, or carried by a fragment such as "Highway?"). */
+  aspect: AspectId | null;
+  /** The message continues an automotive context established earlier in this conversation. */
+  continues: boolean;
   /** Fixed local reply when not allowed (never model-generated). */
   reply: string | null;
 };
@@ -65,7 +82,9 @@ const MEDIUM = new Set(MEDIUM_WORDS);
 const MAKE = new Set(MAKES);
 const MODEL = new Set(MODELS);
 const OFF = new Set(OFF_TOPIC_WORDS);
-const FOLLOW = new Set(FOLLOW_UP_MARKERS);
+const TASK = new Set(TASK_OFF_WORDS);
+/** Every word the lexicon knows as automotive — used to spot foreign named subjects ("Hamlet"). */
+const KNOWN = new Set([...STRONG_WORDS, ...MEDIUM_WORDS, ...MAKES, ...MODELS, ...Object.keys(MAKE_NAMES), ...Object.keys(AMBIGUOUS_NAMES)]);
 // Long strong words are typo-tolerant ("turbochager", "suspention", "transmision").
 const FUZZY = STRONG_WORDS.filter((w) => w.length >= 7 && /^[a-z]+$/.test(w));
 
@@ -81,7 +100,9 @@ export function normalize(text: string) {
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
-    .replace(/[‐-―−]/g, "-")
+    .replace(/(\d)\s*[‒–—―]\s*(\d)/g, "$1-$2")
+    .replace(/[‒–—―]/g, " ")
+    .replace(/[‐‑−]/g, "-")
     .replace(/[’`]/g, "'")
     .replace(/\blb[\s.-]*ft\b/g, "lbft")
     .replace(/\b0\s*-\s*(60|100)\b/g, "0-$1")
@@ -141,7 +162,8 @@ const CHASSIS_LIKE = /^(?:mk|gen)\d{1,2}$|^[efgw]\d{2,3}$/; // mk7, e46, w205
 const POWER_UNITS = /\b\d+(?:[.,]\d+)?\s*(?:hp|bhp|whp|ps|kw|lbft|nm|psi|rpm|mph|kph|km\/h|mpg|cc)\b/;
 const MASS_UNITS = /\b\d+(?:[.,]\d+)?\s*(?:lb|lbs|pounds|kg)\b/;
 
-export type Evidence = { pos: number; neg: number; terms: string[]; ambiguous: string[]; ambiguousScore: number };
+/** task: off-topic deliverables (poem, homework, recipe) — never rescued by an automotive mention. */
+export type Evidence = { pos: number; neg: number; task: number; terms: string[]; ambiguous: string[]; ambiguousScore: number };
 
 /** Automotive (pos) and off-topic (neg) evidence in one message. Each distinct term counts once. */
 export function evidence(text: string): Evidence {
@@ -150,6 +172,7 @@ export function evidence(text: string): Evidence {
   const ambiguous: string[] = [];
   let pos = 0;
   let neg = 0;
+  let task = 0;
   let ambiguousScore = 0;
   const seen = new Set<string>();
   const hit = (term: string, w: number, off = false) => {
@@ -158,11 +181,17 @@ export function evidence(text: string): Evidence {
     terms.push(off ? `-${term}` : term);
     if (off) neg += w;
     else pos += w;
+    if (off && (TASK.has(term) || TASK_OFF_PHRASES.includes(term))) task += 1;
   };
 
   const padded = ` ${norm.replace(/[^a-z0-9\-/ ]/g, " ").replace(/\s+/g, " ")} `;
   for (const p of STRONG_PHRASES) if (padded.includes(` ${p} `)) hit(p, W_STRONG);
-  for (const p of OFF_TOPIC_PHRASES) if (padded.includes(` ${p} `)) hit(p, W_OFF_PHRASE, true);
+  for (const p of [...OFF_TOPIC_PHRASES, ...TASK_OFF_PHRASES]) if (padded.includes(` ${p} `)) hit(p, W_OFF_PHRASE, true);
+  // A model named after its manufacturer ("Jaguar F-Type R", "Skoda Kodiaq") and a facet of vehicle
+  // ownership (fuel economy, price, insurance…) are automotive evidence in their own right.
+  const x = extractTopic(text);
+  if (x.entities.some((en) => en.make)) hit("#make-model", W_STRONG);
+  if (x.aspect && x.aspect !== "cost") hit(`#${x.aspect}`, W_MEDIUM);
   if (POWER_UNITS.test(norm)) hit("#power-unit", W_STRONG);
   if (MASS_UNITS.test(norm)) hit("#mass-unit", W_MEDIUM);
   // A model year followed by a capitalized name ("2015 Yugo GV") usually names a vehicle.
@@ -185,7 +214,7 @@ export function evidence(text: string): Evidence {
     else if (CHASSIS_LIKE.test(t)) hit(t, W_MEDIUM);
     else if (fuzzyStrong(t)) hit(`~${t}`, W_STRONG);
   }
-  return { pos, neg, terms, ambiguous, ambiguousScore };
+  return { pos, neg, task, terms, ambiguous, ambiguousScore };
 }
 
 /** Text outside quotation marks, so quoted phrases ("ignore the light") aren't read as commands. */
@@ -201,23 +230,26 @@ const CAR_CONFIRM = /\b(?:car|cars|vehicle|vehicles|automobile|brand|make|manufa
 const OTHER_CONFIRM = /\b(?:animal|cat|creature|wild|zoo|second one|the second|latter|planet|horse|snake|insect|flower|president|element)\b/i;
 const WORKSPACE_REF = /\b(?:my|this|the|current|our)\s+(?:build|setup|set-up|configuration|config|scenario|scenarios|vehicle|car|ride|results?|analysis|simulation|numbers|run)\b/;
 
-/** Reads like it refers back to the subject already being discussed. */
-function readsAsFollowUp(text: string, e: Evidence) {
-  const norm = normalize(text);
-  const words = norm.match(/[a-z0-9']+/g) ?? [];
-  if (!words.length || words.length > 24) return false;
-  if (words.length <= 3) return true; // "Why?", "Which years?", "And the cost?"
-  if (/^(?:what|how) about\b|^(?:and|but|so|also|then|ok|okay|what if|in that case|same)\b/.test(norm)) return true;
-  if (isDepthRequest(text)) return true; // "Give me the technical explanation.", "Explain it like I'm a beginner."
-  if (e.pos > 0) return true; // generic automotive words ("models", "power", "reliability") with an active subject
-  return words.some((w) => FOLLOW.has(w));
+/** Questions about the assistant itself ("How old are you?") — unless they ask for advice or refer to the subject. */
+const ABOUT_ASSISTANT = /\b(?:you|your|yourself|ur)\b/;
+const ADVICE =
+  /\b(?:recommend|suggest|buy|get|choose|pick|prefer|think|rate|say|explain|tell|help|compare|know|consider|advise|take|drive|own|mean|clarify|expand|elaborate|show|give|list|describe|calculate|estimate|simulate|analy[sz]e|check|find|summari[sz]e|would|could|can|should)\b/;
+const aboutAssistant = (text: string) => ABOUT_ASSISTANT.test(normalize(text)) && !ADVICE.test(normalize(text));
+
+/** General explanations that need no particular vehicle ("How does…", "Why…", "What affects…"). */
+const GENERAL_QUESTION = /^(?:how (?:does|do|is|are|can|could|would)|why|what (?:affects?|causes?|is|are|does|do|makes?|happens)|explain|define|describe|tell me about|difference|which (?:cars|vehicles|suvs|trucks|models)\b)/;
+
+/** A capitalized name the lexicon doesn't know ("Who wrote Hamlet?") — a subject of its own, not a follow-up. */
+function foreignName(text: string) {
+  const words = text.replace(/[^\p{L}\p{N}\s'-]/gu, " ").split(/\s+/).filter(Boolean);
+  return words.slice(1).some((w) => /^\p{Lu}\p{Ll}{2,}$/u.test(w) && !KNOWN.has(w.toLowerCase().replace(/'s$/, "")));
 }
 
 /** Clarifying question that names what is missing instead of a generic prompt. */
-function clarifyFor(text: string) {
+function clarifyFor(text: string, aspect: AspectId | null) {
+  const specific = aspectClarify(aspect);
+  if (specific) return specific;
   const n = normalize(text);
-  if (/\b(?:cost|costs|price|prices|pricing|expensive|cheap|afford)\b/.test(n)) return "Which vehicle, part or repair do you want the cost of?";
-  if (/\b(?:reliab\w*|problems?|issues?|last|durab\w*)\b/.test(n)) return "Which vehicle, engine or component do you mean — for example a specific model or a turbocharger?";
   if (/\b(?:models?|trims?|years?|versions?|variants?|generations?)\b/.test(n)) return "Which manufacturer or model line do you mean?";
   if (/\b(?:power|fast|faster|quick|quicker|speed|acceleration|0-60)\b/.test(n)) return "Which vehicle do you mean? Name the model, or load one in Manual Setup.";
   return CLARIFY_REPLY;
@@ -232,15 +264,20 @@ export function classifyRelevance(message: string, ctx: RelevanceContext): Relev
   const e = evidence(text);
   const score = e.pos - e.neg;
   const prior = deriveTopic(ctx.history).topic;
-  const after = () => deriveTopic([...ctx.history, { role: "user", text }]).topic;
-  const result = (outcome: Outcome, basis: Relevance["basis"], reply: string | null = null): Relevance => ({
-    outcome,
-    decision: outcome === "AUTOMOTIVE" || outcome === "CONTEXTUAL_FOLLOWUP" ? "allow" : outcome === "AMBIGUOUS" ? "clarify" : outcome === "SMALL_TALK" ? "small_talk" : "reject",
-    basis,
-    score,
-    topic: outcome === "OFF_TOPIC" ? prior : after(),
-    reply,
-  });
+  const derived = deriveTopic([...ctx.history, { role: "user", text }]);
+  const result = (outcome: Outcome, basis: Relevance["basis"], reply: string | null = null): Relevance => {
+    const after = outcome === "OFF_TOPIC" ? null : derived;
+    return {
+      outcome,
+      decision: outcome === "AUTOMOTIVE" || outcome === "CONTEXTUAL_FOLLOWUP" ? "allow" : outcome === "AMBIGUOUS" ? "clarify" : outcome === "SMALL_TALK" ? "small_talk" : "reject",
+      basis,
+      score,
+      topic: after ? after.topic : prior,
+      aspect: after?.aspect ?? null,
+      continues: !!after && after.mode === "continue" && hasContext(prior),
+      reply,
+    };
+  };
 
   // 1. Attempts to change the assistant's role. Quoted text alone doesn't count when the rest of
   //    the message is a genuine automotive question.
@@ -253,10 +290,13 @@ export function classifyRelevance(message: string, ctx: RelevanceContext): Relev
   // 2. Greetings and thanks.
   if (SMALL_TALK.test(text)) return result("SMALL_TALK", "small_talk", SMALL_TALK_REPLY);
 
-  // 3. Explicit off-topic content wins unless automotive evidence clearly outweighs it. A previous
-  //    car discussion never authorizes an unrelated question.
+  // 3. Explicit off-topic content. A non-automotive task (poem, homework, recipe) is always rejected;
+  //    an off-topic subject word only when automotive evidence doesn't outweigh it, so cross-domain
+  //    questions ("How does cold weather affect MPG?") stay allowed. A previous car discussion never
+  //    authorizes an unrelated question.
   const definite = e.pos - e.ambiguousScore;
-  if (e.neg >= W_OFF && definite < e.neg + W_STRONG) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
+  if (e.task > 0) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
+  if (e.neg > 0 && definite < Math.max(ALLOW_AT, e.neg + W_MEDIUM)) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
 
   // 4. The answer to our own "cars or the animal?" question.
   const last = ctx.history.at(-1);
@@ -273,16 +313,42 @@ export function classifyRelevance(message: string, ctx: RelevanceContext): Relev
     return result("AMBIGUOUS", "ambiguous", `Do you mean ${a.car} or ${a.other}?`);
   }
 
-  // 6. Clearly automotive.
-  if (e.pos >= ALLOW_AT) return result("AUTOMOTIVE", "automotive");
+  const x = extractTopic(text);
+  const ownSubject = x.makes.length + x.models.length + x.engines.length + x.components.length + x.ambiguous.length > 0;
+  const context = hasContext(prior);
+  // Something to refer to: this conversation's subject, or the vehicle/results loaded in AutoDyn.
+  const referent = hasSubject(prior) || ctx.hasVehicle || ctx.hasResults;
 
-  if (e.neg === 0) {
-    // 7a. References to the configured vehicle or computed results ("explain my results").
-    if ((ctx.hasVehicle || ctx.hasResults) && WORKSPACE_REF.test(normalize(text))) return result("AUTOMOTIVE", "workspace");
-    // 7b. Follow-ups about the subject established in THIS conversation.
-    if (prior && readsAsFollowUp(text, e)) return result("CONTEXTUAL_FOLLOWUP", "follow_up");
-    // 8. Something automotive-adjacent but without a subject: ask specifically, locally.
-    if (e.pos > 0) return result("AMBIGUOUS", "ambiguous", clarifyFor(text));
+  // A facet question about an unnamed vehicle ("How many miles on a tank?", "Is insurance
+  // expensive?") as opposed to a general one ("How does cold weather affect MPG?").
+  const propertyQuestion = !!x.aspect && !GENERAL_QUESTION.test(normalize(text)) && (normalize(text).match(/[a-z0-9']+/g) ?? []).length <= 8;
+
+  // 6. Clearly automotive — unless it asks about "it" when there is nothing to refer to
+  //    ("What's the MPG?" in a new chat): then ask which vehicle, locally.
+  if (e.pos >= ALLOW_AT) {
+    if (!referent && !ownSubject && (needsReferent(text) || propertyQuestion)) return result("AMBIGUOUS", "ambiguous", clarifyFor(text, x.aspect));
+    const continues = context && derived.mode === "continue";
+    return result(continues ? "CONTEXTUAL_FOLLOWUP" : "AUTOMOTIVE", continues ? "follow_up" : "automotive");
   }
+
+  // From here on there is no off-topic evidence (step 3) and little automotive vocabulary.
+  // 7a. References to the configured vehicle or computed results ("explain my results").
+  if ((ctx.hasVehicle || ctx.hasResults) && WORKSPACE_REF.test(normalize(text))) return result("AUTOMOTIVE", "workspace");
+  // 7b. Inside an automotive conversation, a message is read against its context ("What is the
+  //     pricing?", "How much are they used?", "Would you buy one at that price?") unless it is
+  //     clearly about something else: the assistant itself, or a named subject of its own.
+  if (context) {
+    const elsewhere = !needsReferent(text) && !x.aspect && (aboutAssistant(text) || foreignName(text));
+    if (elsewhere) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
+    // A facet discussed without any vehicle yet ("What is the pricing?" → our question) gives "it" nothing to point at.
+    if (!hasSubject(prior) && !ownSubject && !ctx.hasVehicle && pointsAtThing(text) && (x.aspect || propertyQuestion)) return result("AMBIGUOUS", "ambiguous", clarifyFor(text, x.aspect));
+    return result("CONTEXTUAL_FOLLOWUP", "follow_up");
+  }
+  // 8. No automotive context. A follow-up to an off-topic question stays off-topic ("Do cows
+  //    hibernate?" → "Why?"); a question about a facet or "it" gets a specific clarification.
+  const lastUser = [...ctx.history].reverse().find((h) => h.role === "user");
+  if (lastUser && referenceCue(text) && evidence(lastUser.text).neg > 0) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
+  if (aboutAssistant(text) && !x.aspect) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
+  if (x.aspect || e.pos > 0 || needsReferent(text)) return result("AMBIGUOUS", "ambiguous", clarifyFor(text, x.aspect));
   return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
 }

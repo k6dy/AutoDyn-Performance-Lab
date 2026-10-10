@@ -107,7 +107,7 @@ describe("automotive relevance gate", () => {
 
   it("follow-ups without automotive context are not sent to the provider", () => {
     expect(decide("What about reliability?")).toBe("clarify");
-    expect(decide("Explain that again.")).toBe("reject");
+    expect(decide("Explain that again.")).toBe("clarify"); // ambiguous without context: ask, locally
     const offTopicHistory: RelevanceContext = { ...none, history: [{ role: "user", text: "Do cows hibernate?" }] };
     expect(decide("Why?", offTopicHistory)).toBe("reject");
   });
@@ -127,7 +127,7 @@ describe("automotive relevance gate", () => {
   });
 
   it("treats ambiguous messages with care: clarify locally rather than spend quota", () => {
-    expect(decide("Which one is best?")).toBe("reject");
+    expect(decide("Which one is best?")).toBe("clarify");
     expect(decide("How much power do I need?")).toBe("clarify");
     expect(decide("Explain my results", workspace)).toBe("allow");
     expect(decide("What limits this build?", workspace)).toBe("allow");
@@ -176,7 +176,7 @@ describe("context-aware follow-ups", () => {
   });
 
   it("A2. answering the clarification with 'the car' or 'the animal'", () => {
-    expect(converse(["Do jaguars purr?", "the car", "Which models had V8s?"]).map((r) => r.outcome)).toEqual(["AMBIGUOUS", "AUTOMOTIVE", "AUTOMOTIVE"]);
+    expect(converse(["Do jaguars purr?", "the car", "Which models had V8s?"]).map((r) => r.decision)).toEqual(["clarify", "allow", "allow"]);
     expect(converse(["Do jaguars purr?", "the car"])[1].topic?.makes).toEqual(["Jaguar"]);
     expect(converse(["Do jaguars purr?", "the animal"])[1].outcome).toBe("OFF_TOPIC");
   });
@@ -242,7 +242,7 @@ describe("context-aware follow-ups", () => {
   it("J. 'How much does it cost?' depends on context and asks specifically without one", () => {
     expect(converse(["What does a downpipe do?", "How much does it cost?"])[1].outcome).toBe("CONTEXTUAL_FOLLOWUP");
     expect(converse(["What does a downpipe do?", "Is it legal?"])[1].outcome).toBe("CONTEXTUAL_FOLLOWUP");
-    expect(converse(["How much does it cost?"])[0]).toMatchObject({ outcome: "AMBIGUOUS", reply: "Which vehicle, part or repair do you want the cost of?" });
+    expect(converse(["How much does it cost?"])[0]).toMatchObject({ outcome: "AMBIGUOUS", reply: expect.stringMatching(/price of a vehicle, a part or repair, or a modification/) });
     expect(converse(["What models are there?"])[0]).toMatchObject({ outcome: "AMBIGUOUS", reply: "Which manufacturer or model line do you mean?" });
   });
 

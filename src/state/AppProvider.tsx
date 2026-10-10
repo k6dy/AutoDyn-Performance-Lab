@@ -32,9 +32,9 @@ import { initialState, isStale, NEW_CHAT_TITLE, reducer, type Action, type AppSt
 
 const ACTIVE_CHAT_KEY = "autodyn:chat:active";
 
-/** Local title: the user's words first, then the tracked subject ("Jaguar V8"), else the default. */
+/** Local title: the tracked vehicle subject ("Jaguar V8") or the user's words, then the subject's other parts, else the default. */
 function titleFor(userTexts: string[], vehicle: SpecSet | null, topic: Topic | null) {
-  const t = generateTitle(userTexts, shortVehicle(vehicle?.identity ?? null));
+  const t = generateTitle(userTexts, shortVehicle(vehicle?.identity ?? null), topic);
   if (t !== NEW_CHAT_TITLE) return t;
   const subject = describeTopic(topic);
   return subject ? subject.replace(/ · /g, " — ").slice(0, 60) : t;

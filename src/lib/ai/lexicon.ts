@@ -122,20 +122,136 @@ export const OFF_TOPIC_PHRASES = [
   "differential equation", "virus transmission", "suspended from school", "school suspension", "customer service", "user manual",
 ];
 
-/** Words that make a short message a likely follow-up to the previous turn. */
-export const FOLLOW_UP_MARKERS = [
-  "that", "this", "it", "its", "those", "these", "them", "they", "one", "ones", "other", "option", "options", "again", "more", "simpler",
-  "simply", "else", "instead", "same", "difference", "differences", "disadvantages", "disadvantage", "advantages", "advantage", "pros",
-  "cons", "downsides", "downside", "drawbacks", "drawback", "benefits", "benefit", "risks", "risk", "cost", "costs", "price", "expensive",
-  "cheap", "reliability", "reliable", "durable", "durability", "safe", "safer", "legal", "worth", "better", "worse", "best",
-  "alternatives", "alternative", "example", "examples", "elaborate", "expand", "explain", "clarify", "detail", "details", "continue",
-  "longer", "shorter", "affect", "affects", "effect", "impact", "change", "improve", "mean", "means", "work", "works", "there", "here",
-  "which", "models", "model", "trims", "trim", "years", "year", "versions", "version", "variants", "variant", "generations", "generation",
-  "engines", "engine", "specs", "issues", "issue", "problems", "problem", "prices", "competitors", "rivals", "faster", "slower", "quicker",
-  "newer", "older", "first", "last", "latest", "next", "both", "either", "neither", "each", "all", "another", "sound", "sounds", "much",
-  "many", "long", "often", "common", "typical", "usually", "normal", "fix", "fixed", "cause", "causes", "symptoms", "signs", "launches",
-  "handles", "handle",
+/**
+ * Off-topic words that name a non-automotive *task* (a poem, homework, a recipe…). Unlike topic
+ * words (weather, physics, finance), a task is never rescued by an automotive mention.
+ */
+export const TASK_OFF_WORDS = [
+  "poem", "poems", "poetry", "haiku", "sonnet", "limerick", "lyrics", "song", "songs", "rap", "essay", "essays", "homework", "novel",
+  "fanfic", "joke", "jokes", "riddle", "riddles", "recipe", "recipes", "translate", "translation",
 ];
+export const TASK_OFF_PHRASES = [
+  "write a poem", "write me a poem", "write a story", "write an essay", "my essay", "history essay", "tell me a joke", "a joke about",
+  "recipe for", "how to cook", "how to bake", "do my homework", "solve this equation", "write code", "write a function", "fix my code",
+];
+
+/** Facets of a vehicle (or part) that a question can be about. Used to interpret short follow-ups
+ *  ("Highway?", "What is the pricing?"), to ask specific clarifying questions, and to decide which
+ *  verified data sources apply. Ordered: the first match wins. Patterns run on normalized text. */
+export type AspectId =
+  | "fuel_economy" | "ev_range" | "fuel_range" | "recalls" | "warranty" | "insurance" | "value" | "financing" | "running_costs"
+  | "repairs" | "price" | "reliability" | "practicality" | "safety" | "towing" | "performance" | "specs" | "legal" | "cost";
+
+export const ASPECTS: { id: AspectId; label: string; re: RegExp; clarify: string }[] = [
+  {
+    id: "fuel_economy",
+    label: "fuel economy",
+    re: /\b(?:mpge?|fuel (?:economy|efficiency|consumption|costs?|bill)|gas (?:mileage|money|costs?|bill)|miles per gallon|l\/100 ?km|km\/l|(?:city|highway|combined) (?:mpg|mileage|rating|economy)|(?:need|needs|take|takes|run on|runs on|use|uses|require|requires) (?:premium|regular|diesel|e85)|premium (?:fuel|gas|unleaded)|octane|cost to fill|thirsty|guzzl\w*)\b/,
+    clarify: "Which vehicle's fuel economy do you mean? Include the year, make and model (and the engine if it had several).",
+  },
+  {
+    id: "ev_range",
+    label: "EV range & charging",
+    re: /\b(?:ev range|battery range|electric range|range anxiety|charging|chargers?|recharg\w*|how long (?:does it take )?to charge|charge (?:time|rate|it)|kwh|battery (?:degradation|health|life|replacement)|miles of range)\b/,
+    clarify: "Which EV do you mean? Include the year, make and model (battery size helps if it had several).",
+  },
+  {
+    id: "fuel_range",
+    label: "driving range per tank",
+    re: /\b(?:(?:miles|km|range) (?:on|per|from) a (?:full )?tank|tank range|fuel tank|tank (?:size|capacity)|how far (?:can|does|will) (?:it|they|one) go)\b/,
+    clarify: "Which vehicle do you mean? Range per tank depends on its fuel economy and tank size, so include the year, make and model.",
+  },
+  { id: "recalls", label: "recalls", re: /\brecall(?:s|ed)?\b/, clarify: "Which vehicle do you want recall information for? Include the year, make and model." },
+  {
+    id: "warranty",
+    label: "warranty",
+    re: /\b(?:warrant(?:y|ies)|cpo|certified pre-?owned|powertrain coverage|extended coverage)\b/,
+    clarify: "Which vehicle's warranty do you mean? Include the year, make and model, and whether it's new or used.",
+  },
+  {
+    id: "insurance",
+    label: "insurance",
+    re: /\b(?:insur\w*|(?:young|younger|new|teen|first[- ]time) drivers?)\b/,
+    clarify: "Which vehicle do you want insurance considerations for? The year, make and model are enough — no personal details needed.",
+  },
+  {
+    id: "value",
+    label: "depreciation & resale value",
+    re: /\b(?:depreciat\w*|resale|hold (?:its|their|it's) value|holds? (?:its |their )?value|residual value|trade-?in value)\b/,
+    clarify: "Which vehicle's resale value do you mean? Include the year, make and model.",
+  },
+  {
+    id: "financing",
+    label: "financing & leasing",
+    re: /\b(?:financ\w*|loan|loans|interest rates?|apr|lease|leasing|down payment|monthly payments?)\b/,
+    clarify: "Which vehicle or deal do you mean? Tell me the vehicle and whether you're financing, leasing or paying cash.",
+  },
+  {
+    id: "running_costs",
+    label: "maintenance & running costs",
+    re: /\b(?:maintenance|maintain|servic(?:e|es|ing)|upkeep|oil changes?|running costs?|costs? to (?:own|run|maintain|service)|ownership costs?|cost of ownership|cheap(?:er|est)? to (?:own|run|maintain|service|keep))\b/,
+    clarify: "Which vehicle's maintenance costs do you mean? Include the year, make and model.",
+  },
+  {
+    id: "repairs",
+    label: "repairs & parts",
+    re: /\b(?:repairs?|replace|replacing|replacement|rebuild|rebuilt|parts? (?:costs?|prices?|availability)|(?:are|is) (?:the )?parts?|parts (?:are|hard|easy|expensive|cheap)|labou?r (?:costs?|rates?)|water pump|timing (?:chain|belt)|head gasket|clutch job|new engine|replacement engine)\b/,
+    clarify: "Which vehicle or part do you mean? Include the year, make and model, and the repair if you know it.",
+  },
+  {
+    id: "price",
+    label: "purchase price",
+    re: /\b(?:price|prices|pricing|priced|msrp|sticker|asking price|market value|going rate|out the door|dealer markup|cost new|used (?:prices?|market|ones?|examples?)|how much (?:are|is|was|were|do|does) (?:they|it|one|a|an|the)\b[^?]*\b(?:used|new|go for|sell for)|how much for)\b/,
+    clarify: "Which vehicle do you want pricing for — and new or used? Include the year, make and model.",
+  },
+  {
+    id: "reliability",
+    label: "reliability",
+    re: /\b(?:reliab\w*|unreliable|problems?|issues?|break(?:s| down)?|breakdowns?|failures?|fails?|years? to avoid|avoid (?:which )?years?|which years|lemon|durab\w*|longevity|lasts? long|high[- ]mileage|common faults?)\b/,
+    clarify: "Which vehicle, engine or component do you mean — for example a specific model or a turbocharger?",
+  },
+  {
+    id: "practicality",
+    label: "practicality & comfort",
+    re: /\b(?:daily(?: driver| drive)?|practical\w*|comfort\w*|ride (?:quality|comfort)|cargo|trunk|boot space|rear seats?|back seats?|legroom|headroom|family car|commut\w*|interior space|road trips?)\b/,
+    clarify: "Which vehicle do you mean? Include the year, make and model.",
+  },
+  {
+    id: "safety",
+    label: "safety",
+    re: /\b(?:safety (?:ratings?|features?|scores?)|crash[- ]tests?|crash ratings?|iihs|ncap|safest|safe (?:car|vehicle|suv|choice)|driver[- ]assist\w*|adas)\b/,
+    clarify: "Which vehicle's safety do you mean? Include the year, make and model.",
+  },
+  { id: "towing", label: "towing & payload", re: /\b(?:tow(?:ing)?|payload|hitch|trailer)\b/, clarify: "Which vehicle's towing capacity do you mean? Include the year, make, model and engine." },
+  {
+    id: "performance",
+    label: "performance",
+    re: /\b(?:0-60|0-100|quarter-mile|acceleration|top speed|how fast|faster|quicker|lap times?|launch(?:es)?)\b/,
+    clarify: "Which vehicle do you mean? Name the model, or load one in Manual Setup.",
+  },
+  {
+    id: "specs",
+    label: "specifications & trims",
+    re: /\b(?:trims?|engine options?|which engines?|what engines?|dimensions?|features|options|generations?|specs|specifications?|come (?:in|with)|available (?:in|with)|models? (?:are there|were there|had|have))\b/,
+    clarify: "Which manufacturer or model line do you mean?",
+  },
+  {
+    id: "legal",
+    label: "legality & emissions rules",
+    re: /\b(?:legal|illegal|street[- ]legal|emissions? (?:laws?|rules|regulations|tests?|testing)|smog (?:check|test|legal)|carb[- ](?:legal|compliant)|regulations?)\b/,
+    clarify: "Which vehicle, part or modification do you mean, and in which country or state?",
+  },
+  {
+    id: "cost",
+    label: "cost",
+    // "How much does it cost?" — not "How much does weight affect acceleration?" or "how much power".
+    re: /\b(?:how much (?:is|are|was|were|does|do|did|would|will|for|to|money)\b(?![^?]*\b(?:affect|affects|impact|matter|help|change|improve|add|reduce|increase|weigh|power|torque|boost|horsepower|hp|grip|faster|slower|range|weight|psi)\b)|cost|costs|costly|expensive|cheap|cheaper|cheapest|pricey|afford\w*)\b/,
+    clarify: "Do you mean the price of a vehicle, a part or repair, or a modification? Name it and I'll take it from there.",
+  },
+];
+
+/** Trim designations that follow a model name ("F-Type R", "C43 AMG"). */
+export const TRIM_TOKENS = ["r", "s", "svr", "sv", "gt", "gts", "rs", "amg", "st", "si", "ss", "srt", "trd", "sport", "type-r", "gti", "xdrive", "4matic", "quattro", "hybrid"];
 
 /** Messages answered locally without any AI request. */
 export const SMALL_TALK = /^(?:hi|hello|hey|hiya|yo|good (?:morning|afternoon|evening)|thanks?(?: you)?(?: so much| a lot)?|thank you(?: very much)?|thx|ty|cheers|ok(?:ay)?|cool|great|nice|awesome|got it|perfect|sounds good|bye|goodbye|see you)[!. ]*$/i;

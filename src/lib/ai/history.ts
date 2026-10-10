@@ -45,19 +45,21 @@ export function historyFor(messages: Msg[]): Turn[] {
   let budget = AI_LIMITS.maxHistoryTotalChars;
   const picked = new Map<number, Turn>();
 
-  // Keep the subject-establishing message when it would otherwise fall out of the window.
-  const { anchor } = deriveTopic(list);
+  // Keep the messages the current subject depends on (the vehicle that was named, both sides of a
+  // comparison) when they would otherwise fall out of the window — at most two extra messages.
   const windowStart = Math.max(0, list.length - RECENT_TURNS);
-  if (anchor >= 0 && anchor < windowStart) {
-    const user = { role: "user" as const, text: list[anchor].text.slice(0, AI_LIMITS.maxHistoryChars) };
-    picked.set(anchor, user);
+  const outside = deriveTopic(list).anchors.filter((a) => a < windowStart);
+  const pins = outside.length > 2 ? [outside[0], outside.at(-1)!] : outside;
+  for (const a of pins) {
+    const user = { role: "user" as const, text: list[a].text.slice(0, AI_LIMITS.maxHistoryChars) };
+    picked.set(a, user);
     budget -= user.text.length;
-    const reply = list[anchor + 1];
-    if (reply?.role === "assistant" && anchor + 1 < windowStart) {
-      const r = { role: "assistant" as const, text: compactTurn(reply.text, ANCHOR_REPLY_CHARS) };
-      picked.set(anchor + 1, r);
-      budget -= r.text.length;
-    }
+  }
+  const reply = pins.length === 1 ? list[pins[0] + 1] : undefined;
+  if (reply?.role === "assistant" && pins[0] + 1 < windowStart) {
+    const r = { role: "assistant" as const, text: compactTurn(reply.text, ANCHOR_REPLY_CHARS) };
+    picked.set(pins[0] + 1, r);
+    budget -= r.text.length;
   }
 
   let recent = 0;

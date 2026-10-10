@@ -8,7 +8,9 @@ import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, 
 import { AI_LIMITS, PROVIDER_MESSAGES, SHORTENED_NOTICE } from "@/lib/ai/types";
 import { classifyRelevance, isInjection, localReply } from "@/lib/ai/relevance";
 import { OUTPUT_BUDGET, planResponse } from "@/lib/ai/responsePlan";
-import { deriveTopic, describeTopic, refersBack } from "@/lib/ai/topic";
+import { describeTopic, pinnedVehicles, type Topic } from "@/lib/ai/topic";
+import type { AspectId } from "@/lib/ai/lexicon";
+import type { FuelEconomyResult, RecallResult, VehicleQuery as LookupQuery } from "@/lib/vehicles/ownershipData.server";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
@@ -26,7 +28,50 @@ export type AssistantDeps = {
   /** Builds a spec set for a matched trim (server attaches weight estimates). */
   specSetFor?: (trim: DatasetTrim) => SpecSet;
   nhtsaModels: (make: string, year: number) => Promise<string[]>;
+  /** Official free ownership data (EPA fuel economy, NHTSA recalls). Optional: without it the
+   *  assistant answers from general knowledge and says that verified figures weren't available. */
+  ownership?: {
+    fuelEconomy: (q: LookupQuery, signal: AbortSignal) => Promise<FuelEconomyResult>;
+    recalls: (q: LookupQuery, signal: AbortSignal) => Promise<RecallResult>;
+  };
 };
+
+const FUEL_ASPECTS: (AspectId | null)[] = ["fuel_economy", "fuel_range", "ev_range"];
+const MY_VEHICLE = /\b(?:my|this|the current|our)\s+(?:\w+\s+){0,2}?(?:car|vehicle|ride|truck|build|setup)\b/i;
+
+/** Vehicles to look up: the one(s) the conversation pins down, else the Manual Setup vehicle when the user means it. */
+function lookupTargets(topic: Topic | null, context: AssistantRequest["context"], message: string): LookupQuery[] {
+  const pinned = pinnedVehicles(topic);
+  const v = context.vehicle;
+  const loaded = v ? { year: v.year, make: v.make, model: v.model } : null;
+  if (pinned.length) {
+    // "my C300": the model matches the loaded vehicle, which supplies the year.
+    return pinned.map((p) => (loaded && !p.year && loaded.make === p.make && loaded.model.toLowerCase() === p.model.toLowerCase() ? loaded : p));
+  }
+  if (loaded && (MY_VEHICLE.test(message) || topic?.models.some((m) => m.toLowerCase() === loaded.model.toLowerCase()))) return [loaded];
+  return [];
+}
+
+/** Verified data for this question, fetched only when its facet calls for it (no extra AI calls). */
+async function verifiedData(aspect: AspectId | null, targets: LookupQuery[], deps: AssistantDeps) {
+  if (!deps.ownership || !targets.length) return [];
+  const signal = AbortSignal.timeout(5000);
+  if (FUEL_ASPECTS.includes(aspect)) return Promise.all(targets.map((t) => deps.ownership!.fuelEconomy(t, signal).catch(() => null)));
+  if (aspect === "recalls" || aspect === "safety") return Promise.all(targets.map((t) => deps.ownership!.recalls(t, signal).catch(() => null)));
+  return [];
+}
+
+function sourceNotices(data: (FuelEconomyResult | RecallResult | null)[]) {
+  const out: string[] = [];
+  for (const d of data) {
+    if (d?.status !== "found") continue;
+    if ("variants" in d) {
+      const more = d.totalVariants - d.variants.length;
+      out.push(`Fuel economy from ${d.source}: official ratings for ${d.variants[0].label}${d.variants.length > 1 ? ` and ${d.variants.length - 1} other variant${d.variants.length > 2 ? "s" : ""}` : ""}${more > 0 ? ` (${more} more listed by EPA)` : ""}.`);
+    } else out.push(`Recalls from the ${d.source}: ${d.count} campaign${d.count === 1 ? "" : "s"} listed for the ${d.query}. Check a specific car by VIN at nhtsa.gov/recalls.`);
+  }
+  return out;
+}
 
 type Result = { status: number; body: AssistantResponse };
 
@@ -217,9 +262,17 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   if (!deps.configured) return fail("not_configured", req.requestId);
   // How deep and in what shape to answer is decided locally and sent with the one provider request.
   // Follow-ups include clearly automotive messages that build on the current subject ("Which ones are supercharged?").
-  const isFollowUp = relevance.outcome === "CONTEXTUAL_FOLLOWUP" || (!!deriveTopic(history).topic && refersBack(req.message));
+  const isFollowUp = relevance.continues || relevance.outcome === "CONTEXTUAL_FOLLOWUP";
   const plan = planResponse(req.message, { detail: req.detail, followUp: isFollowUp });
-  const hints = { subject: describeTopic(relevance.topic), followUp: isFollowUp, plan };
+  const external = (await verifiedData(relevance.aspect, lookupTargets(relevance.topic, req.context, req.message), deps)).filter((d): d is FuelEconomyResult | RecallResult => !!d);
+  const hints = {
+    subject: describeTopic(relevance.topic),
+    followUp: isFollowUp,
+    plan,
+    aspect: relevance.aspect,
+    comparing: !!relevance.topic?.comparing,
+    external,
+  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
@@ -297,15 +350,19 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   if (shortened || clipped.clipped) notices.push(SHORTENED_NOTICE);
   const known = `${JSON.stringify(req.context)} ${req.message} ${req.history.map((h) => h.text).join(" ")} ${
     vehicle && "specSet" in vehicle ? JSON.stringify(vehicle.specSet) : ""
-  } ${kept.map((c) => c.display).join(" ")}`;
+  } ${kept.map((c) => c.display).join(" ")} ${JSON.stringify(external)}`;
+  notices.push(...sourceNotices(external));
   const unverified = unverifiedFigures(reply, known);
-  if (unverified.length) {
+  const prices = unverified.filter((f) => f.includes("$"));
+  const figures = unverified.filter((f) => !f.includes("$"));
+  if (figures.length) {
     notices.push(
       output.intent === "general"
-        ? `General automotive knowledge, not AutoDyn data: figures such as ${unverified.join(", ")} are typical values, not verified for a specific vehicle.`
-        : `This reply mentions figures that are not in AutoDyn's data for this session (${unverified.join(", ")}). Treat them as unverified.`,
+        ? `General automotive knowledge, not AutoDyn data: figures such as ${figures.join(", ")} are typical values, not verified for a specific vehicle.`
+        : `This reply mentions figures that are not in AutoDyn's data for this session (${figures.join(", ")}). Treat them as unverified.`,
     );
   }
+  if (prices.length) notices.push(`Prices such as ${prices.join(", ")} are approximate general knowledge, not live market data. Check current listings or quotes for today's figures.`);
   const feasibilityLines = req.context.results?.feasibility ?? [];
   if (feasibilityLines.length && contradictsFeasibility(reply, feasibilityLines)) {
     notices.push(

@@ -1242,6 +1242,30 @@ describe("Conversation context in the assistant", () => {
     expect(lastAssistantBody!.history[0].text).toBe("Tell me about Jaguar V8 engines.");
   });
 
+  it("K2. an older vehicle chat reopened later answers 'What about its MPG?' and 'What is the pricing?' in context", async () => {
+    modelOutput = general("The 2018 F-Type R pairs a supercharged 5.0 V8 with AWD.");
+    const { unmount } = renderApp();
+    await openAssistant();
+    await ask("Tell me about the 2018 Jaguar F-Type R.");
+    await within(chatLog()).findByText(/supercharged 5\.0 V8 with AWD/);
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+    expect(chatItems()[0].textContent).toMatch(/2018 Jaguar F-Type R/); // titled by its subject
+    unmount();
+    renderApp();
+    await openAssistant();
+    await waitFor(() => expect(within(chatLog()).getByText("Tell me about the 2018 Jaguar F-Type R.")).toBeTruthy(), { timeout: 5000 });
+    modelOutput = general("EPA ratings depend on the variant.");
+    await ask("What about its MPG?");
+    await within(chatLog()).findByText(/EPA ratings depend on the variant/);
+    expect(lastTurn()).toMatch(/SUBJECT .*2018 Jaguar F-Type R[\s\S]*FOCUS: this question is about fuel economy/);
+    modelOutput = general("Used prices depend on mileage and condition.");
+    await ask("What is the pricing?");
+    await within(chatLog()).findByText(/Used prices depend on mileage/);
+    expect(within(chatLog()).queryByText(OFF_TOPIC_REPLY)).toBeNull();
+    expect(lastTurn()).toMatch(/FOCUS: this question is about purchase price/);
+    expect(assistantCalls).toBe(3);
+  });
+
   it("L. switching chats switches the subject — no leakage between conversations", async () => {
     renderApp();
     await openAssistant();

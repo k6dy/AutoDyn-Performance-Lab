@@ -3,6 +3,7 @@
 
 import { MAKES, MODELS } from "@/lib/ai/lexicon";
 import { normalize } from "@/lib/ai/relevance";
+import { aspectLabel, type Topic } from "@/lib/ai/topic";
 
 export const DEFAULT_TITLE = "New Conversation";
 const MAX = 60;
@@ -101,11 +102,24 @@ function modification(norm: string): string | null {
 
 const clip = (s: string) => (s.length > MAX ? `${s.slice(0, MAX - 1).trimEnd()}…` : s);
 
+/** "2018 Jaguar F-Type R", "Jaguar V8", "F-Type R vs M4" from the tracked conversation subject. */
+function subjectTitle(t: Topic | null): string | null {
+  if (!t) return null;
+  const vehicles = t.models.length ? t.models : t.makes;
+  if (!vehicles.length) return null;
+  const engine = !t.models.length && t.engines[0] ? ` ${t.engines[0]}` : "";
+  if (vehicles.length >= 2) return `${vehicles.slice(0, 2).join(" vs ")}${engine}`;
+  const make = t.models.length && t.makes[0] && !vehicles[0].toLowerCase().includes(t.makes[0].toLowerCase()) ? `${t.makes[0]} ` : "";
+  return `${t.years.length === 1 ? `${t.years[0]} ` : ""}${make}${vehicles[0]}${engine}`;
+}
+
+const titleCase = (s: string) => s.replace(/\b[a-z]/g, (m) => m.toUpperCase());
+
 /**
  * Title from the first meaningful user messages and the vehicle in context (short label such as
  * "2015 C300"). Returns DEFAULT_TITLE when nothing useful can be derived.
  */
-export function generateTitle(userMessages: string[], currentVehicle: string | null): string {
+export function generateTitle(userMessages: string[], currentVehicle: string | null, tracked: Topic | null = null): string {
   const text = userMessages.slice(0, 3).join(" ");
   if (!text.trim()) return DEFAULT_TITLE;
   const norm = normalize(text);
@@ -116,6 +130,13 @@ export function generateTitle(userMessages: string[], currentVehicle: string | n
   if (vehicles.length >= 2 || (vehicles.length === 1 && /\b(?:vs|versus)\b/.test(norm) && currentVehicle)) {
     const [a, b] = vehicles.length >= 2 ? vehicles : [currentVehicle!, vehicles[0]];
     return clip(`${a} vs ${b}`);
+  }
+  // The conversation's tracked vehicle subject names it better than stray words in its first
+  // messages (a Jaguar chat that mentions intercoolers is still a Jaguar chat).
+  const subject = subjectTitle(tracked);
+  if (subject && !mod) {
+    const facet = !tracked!.comparing && aspectLabel(tracked!.aspect);
+    return clip(facet ? `${subject} — ${titleCase(facet)}` : subject);
   }
   const refersToCurrent = /\b(?:my|this|the current|our)\s+(?:\w+\s+)?(?:car|vehicle|build|setup|ride|results?)\b/.test(norm) || !!mod;
   const vehicle = vehicles[0] ?? (refersToCurrent ? currentVehicle : null);

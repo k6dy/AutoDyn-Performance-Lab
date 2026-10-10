@@ -241,21 +241,28 @@ export function completedPart(text: string): string {
   return clipText(done.trimEnd(), AI_LIMITS.maxReplyChars).text.replace(DANGLING, "").trimEnd();
 }
 
-const FIGURE = /(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(hp|horsepower|bhp|kw|lb[-·\s]?ft|pound[-\s]feet|n[·.\s]?m|lbs?|pounds|kg|mph|km\/h|kph|seconds|secs?|s\b|rpm)/gi;
+const FIGURE = /(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(hp|horsepower|bhp|kwh|kw|lb[-·\s]?ft|pound[-\s]feet|n[·.\s]?m|lbs?|pounds|kg|mpge?|mph|km\/h|kph|seconds|secs?|s\b|rpm)/gi;
+const PRICE = /\$\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\s?k\b)?/gi;
 
 /**
- * Finds figures with engineering units in a reply that do not appear anywhere in the data AutoDyn
- * sent (context, message, history). Such figures may come from model memory and are flagged.
+ * Finds figures with engineering units (including MPG and kWh) and prices in a reply that do not
+ * appear anywhere in the data AutoDyn sent (context, message, history, verified external data).
+ * Such figures may come from model memory and are flagged.
  */
 export function unverifiedFigures(reply: string, knownText: string): string[] {
   const known = numbersIn(knownText);
   const out: string[] = [];
+  const isKnown = (raw: string, scale = 1) => {
+    const n = Number(raw.replace(/,/g, "")) * scale;
+    const decimals = scale === 1 ? (raw.split(".")[1] ?? "").length : 0;
+    const tol = 0.5 * Math.pow(10, -decimals) + 1e-9;
+    return known.some((k) => Math.abs(k - n) <= tol);
+  };
   for (const m of reply.matchAll(FIGURE)) {
     const n = Number(m[1].replace(/,/g, ""));
     if (n === 0 || n === 60 || n === 100 || n === 50 || n === 70) continue; // speed-range labels such as 0–60
-    const decimals = (m[1].split(".")[1] ?? "").length;
-    const tol = 0.5 * Math.pow(10, -decimals) + 1e-9;
-    if (!known.some((k) => Math.abs(k - n) <= tol)) out.push(m[0]);
+    if (!isKnown(m[1])) out.push(m[0]);
   }
+  for (const m of reply.matchAll(PRICE)) if (!isKnown(m[1], m[2] ? 1000 : 1)) out.push(m[0].replace(/\s+/g, ""));
   return Array.from(new Set(out)).slice(0, 6);
 }
