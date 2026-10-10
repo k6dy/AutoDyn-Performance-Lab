@@ -89,6 +89,16 @@ export function buildAssistantContext(
             .slice(0, 10),
           estimatedInputs: Array.from(new Set([...r.stock.estimates, ...(r.modified?.estimates ?? [])].filter((e) => e.key !== "launchRpm").map((e) => clip(`${SPEC_LABEL[e.key as SpecKey]}: ${e.reason}`, 160)))).slice(0, 20),
           dataQuality: `Stock ${r.stock.quality.level}${r.modified ? `, modified ${r.modified.quality.level}` : ""}`,
+          feasibility: [r.feasibility.stock, r.feasibility.modified]
+            .filter((a): a is NonNullable<typeof a> => !!a)
+            .flatMap((a) => [
+              clip(`${a.scenario === "stock" ? "Stock" : "Modified"} feasibility: ${a.headline}. ${a.primaryReason}`, 700),
+              ...a.checks
+                .filter((c) => c.outcome === "violation" || c.outcome === "caution")
+                .slice(0, 4)
+                .map((c) => clip(`${a.scenario === "stock" ? "Stock" : "Modified"} · ${c.label} (${c.outcome}): ${c.detail}`, 700)),
+            ])
+            .slice(0, 12),
         }
       : null,
   };

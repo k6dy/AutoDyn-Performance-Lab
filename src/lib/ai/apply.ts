@@ -3,8 +3,9 @@
 
 import type { Proposal, ProposedChange } from "@/lib/ai/types";
 import { NUMERIC_FIELDS } from "@/lib/domain/fields";
-import { effectiveValues, setModifiedValue, setStockValue } from "@/lib/domain/scenario";
-import type { AnalysisConfig, Conditions, NumericSpecKey, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
+import { effectiveConstraints, effectiveValues, setModifiedValue, setStockValue } from "@/lib/domain/scenario";
+import type { AnalysisConfig, Conditions, ConstraintKey, NumericSpecKey, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
+import { CONSTRAINT_KEYS } from "@/lib/domain/types";
 
 export type ChangeEvaluation = {
   change: ProposedChange;
@@ -25,8 +26,11 @@ export function proposalVehicle(proposal: Proposal, chosen: SpecSet | null): Spe
   return null;
 }
 
+const isConstraint = (k: string): k is ConstraintKey => (CONSTRAINT_KEYS as readonly string[]).includes(k);
+
 function current(config: AnalysisConfig, change: ProposedChange): number | string | null {
   if (change.target === "conditions") return config.conditions[change.key as keyof Conditions] as number | string;
+  if (isConstraint(change.key)) return effectiveConstraints(config, change.target)[change.key] ?? null;
   const values = effectiveValues(config, change.target === "modified" && config.modified ? "modified" : "stock");
   const v = values?.[change.key as SpecKey]?.value;
   return Array.isArray(v) ? null : (v as number | string | null) ?? null;
@@ -64,6 +68,10 @@ export function evaluateProposal(
 function applyOne(config: AnalysisConfig, change: ProposedChange, to: number | string, relative?: number): AnalysisConfig {
   if (change.target === "conditions") {
     return { ...config, conditions: { ...config.conditions, [change.key]: to } };
+  }
+  if (isConstraint(change.key)) {
+    const scenario = change.target;
+    return { ...config, constraints: { ...config.constraints, [scenario]: { ...(config.constraints?.[scenario] ?? {}), [change.key]: to } } };
   }
   if (!config.stock) return config;
   const key = change.key as SpecKey;

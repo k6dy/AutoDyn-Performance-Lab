@@ -120,7 +120,7 @@ export default function LoadingStage({
               cy="50"
               r="46"
               fill="none"
-              stroke={error ? "var(--color-loss)" : "var(--color-accent)"}
+              stroke={error ? "var(--color-error)" : "var(--color-accent)"}
               strokeWidth="1.75"
               strokeLinecap="round"
               strokeDasharray={error ? "289 0" : "52 237"}
@@ -132,7 +132,7 @@ export default function LoadingStage({
         </div>
       </div>
       <div className="min-h-[20px]">
-        <p key={label} className={cx("animate-fade text-[13px] font-medium", error ? "text-loss" : "text-ink")}>
+        <p key={label} className={cx("animate-fade text-[13px] font-medium", error ? "text-error" : "text-ink")}>
           {label}
         </p>
         {detail && <p className="mt-0.5 max-w-sm text-xs leading-4 text-muted">{detail}</p>}

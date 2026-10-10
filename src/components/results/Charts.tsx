@@ -16,10 +16,12 @@ import {
 } from "recharts";
 import { useReducedMotion } from "@/components/ui";
 import type { ScenarioResult } from "@/lib/physics/analysis";
+import { FEASIBILITY_COLORS, SCENARIO_STYLE } from "@/lib/theme";
+import { launchAccelBound } from "@/lib/feasibility/bounds";
 import { G, toDisplay, unitLabel, type UnitSystem } from "@/lib/units";
 
-const STOCK = "#8fa7bd";
-const MOD = "#d46a2c";
+const STOCK = SCENARIO_STYLE.stock.color;
+const MOD = SCENARIO_STYLE.modified.color;
 const GRID = "#2a2e32";
 const AXIS = "#7d8288";
 
@@ -77,7 +79,7 @@ export function SpeedTimeChart({ stock, modified, units }: { stock: ScenarioResu
           <ReferenceLine key={i} x={Number(t.toFixed(2))} stroke={data[i]?.color ?? AXIS} strokeDasharray="3 4" strokeOpacity={0.6} />
         ))}
         {data.map((s) => (
-          <Line key={s.id} data={s.points} dataKey="v" name={s.label} stroke={s.color} strokeWidth={2} dot={false} isAnimationActive={!reduced} animationDuration={600} />
+          <Line key={s.id} data={s.points} dataKey="v" name={s.label} stroke={s.color} strokeDasharray={SCENARIO_STYLE[s.id].dash} strokeWidth={2} dot={false} isAnimationActive={!reduced} animationDuration={600} />
         ))}
       </LineChart>
     </ChartFrame>
@@ -87,18 +89,29 @@ export function SpeedTimeChart({ stock, modified, units }: { stock: ScenarioResu
 export function AccelChart({ stock, modified, units }: { stock: ScenarioResult | null; modified: ScenarioResult | null; units: UnitSystem }) {
   const reduced = useReducedMotion();
   const series = useSeries(stock, modified);
+  const bounds = series.map((s) => ({ id: s.id, label: s.label, color: s.color, g: Number((launchAccelBound(s.r.inputs) / G).toFixed(3)) }));
   const speedUnit = unitLabel("speed", units);
   const data = series.map((s) => ({ ...s, points: thin(s.r.samples, 2).map((p) => ({ v: Number(toDisplay("speed", p.v, units).toFixed(1)), g: Number((p.a / G).toFixed(3)) })) }));
   return (
-    <ChartFrame title="Acceleration vs. speed" caption="Longitudinal acceleration in g. Flat early sections are traction-limited; dips are gear changes.">
+    <ChartFrame title="Acceleration vs. speed" caption="Longitudinal acceleration in g. Dotted lines: launch traction limit used by the feasibility engine. Flat early sections are traction-limited; dips are gear changes.">
       <LineChart margin={{ top: 4, right: 14, left: 0, bottom: 16 }}>
         <CartesianGrid stroke={GRID} vertical={false} />
         <XAxis type="number" dataKey="v" domain={[0, "dataMax"]} {...axisProps} label={{ value: `Speed (${speedUnit})`, position: "insideBottom", offset: -8, fill: AXIS, fontSize: 11 }} />
         <YAxis type="number" dataKey="g" width={44} {...axisProps} label={{ value: "g", angle: -90, position: "insideLeft", offset: 14, fill: AXIS, fontSize: 11 }} />
         <Tooltip {...tooltipStyle} formatter={(v) => [`${v} g`]} labelFormatter={(v) => `${v} ${speedUnit}`} />
         <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: 12 }} />
+        {bounds.map((b, i) => (
+          <ReferenceLine
+            key={`limit-${b.id}`}
+            y={b.g}
+            stroke={b.color}
+            strokeOpacity={0.55}
+            strokeDasharray="1 4"
+            label={{ value: `${b.label} traction limit ${b.g.toFixed(2)} g`, position: i === 0 ? "insideTopRight" : "insideBottomRight", fill: AXIS, fontSize: 10 }}
+          />
+        ))}
         {data.map((s) => (
-          <Line key={s.id} data={s.points} dataKey="g" name={s.label} stroke={s.color} strokeWidth={1.75} dot={false} isAnimationActive={!reduced} animationDuration={600} />
+          <Line key={s.id} data={s.points} dataKey="g" name={s.label} stroke={s.color} strokeDasharray={SCENARIO_STYLE[s.id].dash} strokeWidth={1.75} dot={false} isAnimationActive={!reduced} animationDuration={600} />
         ))}
       </LineChart>
     </ChartFrame>
@@ -118,7 +131,7 @@ export function CurveChart({ stock, modified, units }: { stock: ScenarioResult |
   return (
     <ChartFrame
       title={ev ? "Motor torque & power (modeled)" : "Torque & power vs. rpm (modeled)"}
-      caption="Synthesized from rated peaks and their rpm points — the curve the simulation used, not dyno data. Solid: power · dashed: torque."
+      caption="Synthesized from rated peaks and their rpm points — the curve the simulation used, not dyno data. Thick lines: power (Stock solid, Modified dashed) · dotted: torque."
     >
       <LineChart margin={{ top: 4, right: 4, left: 0, bottom: 16 }}>
         <CartesianGrid stroke={GRID} vertical={false} />
@@ -128,8 +141,8 @@ export function CurveChart({ stock, modified, units }: { stock: ScenarioResult |
         <Tooltip {...tooltipStyle} labelFormatter={(r) => `${r} rpm`} />
         <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: 12 }} />
         {data.flatMap((s) => [
-          <Line key={`${s.id}-p`} yAxisId="p" data={s.points} dataKey="p" name={`${s.label} power (${pUnit})`} stroke={s.color} strokeWidth={2} dot={false} isAnimationActive={!reduced} />,
-          <Line key={`${s.id}-t`} yAxisId="t" data={s.points} dataKey="t" name={`${s.label} torque (${tUnit})`} stroke={s.color} strokeWidth={1.5} strokeDasharray="5 4" dot={false} isAnimationActive={!reduced} />,
+          <Line key={`${s.id}-p`} yAxisId="p" data={s.points} dataKey="p" name={`${s.label} power (${pUnit})`} stroke={s.color} strokeDasharray={SCENARIO_STYLE[s.id].dash} strokeWidth={2} dot={false} isAnimationActive={!reduced} />,
+          <Line key={`${s.id}-t`} yAxisId="t" data={s.points} dataKey="t" name={`${s.label} torque (${tUnit})`} stroke={s.color} strokeWidth={1.25} strokeDasharray="2 3" dot={false} isAnimationActive={!reduced} />,
         ])}
       </LineChart>
     </ChartFrame>
@@ -154,8 +167,8 @@ export function SensitivityChart({ result, label }: { result: ScenarioResult; la
         <YAxis type="category" dataKey="name" width={150} {...axisProps} tick={{ fill: "#a9adb2", fontSize: 11 }} />
         <ReferenceLine x={0} stroke="#5a6066" />
         <Tooltip {...tooltipStyle} cursor={{ fill: "rgba(255,255,255,0.03)" }} formatter={(v) => [`${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(2)} s`]} />
-        <Bar dataKey="better" name="Favorable change" fill="#7cb38a" barSize={12} isAnimationActive={!reduced} />
-        <Bar dataKey="worse" name="Unfavorable change" fill="#e0776b" barSize={12} isAnimationActive={!reduced} />
+        <Bar dataKey="better" name="Favorable change" fill={FEASIBILITY_COLORS.feasible} barSize={12} isAnimationActive={!reduced} />
+        <Bar dataKey="worse" name="Unfavorable change" fill={FEASIBILITY_COLORS.insufficient_data} barSize={12} isAnimationActive={!reduced} />
       </BarChart>
     </ChartFrame>
   );
@@ -175,7 +188,7 @@ export function MassSweepChart({ stock, modified, units }: { stock: ScenarioResu
         <Tooltip {...tooltipStyle} formatter={(v) => [`${v} s`]} labelFormatter={(d) => `${Number(d) > 0 ? "+" : ""}${d}% mass`} />
         <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: 12 }} />
         {data.map((s) => (
-          <Line key={s.id} data={s.points} dataKey="t" name={s.label} stroke={s.color} strokeWidth={2} dot={{ r: 2.5 }} isAnimationActive={!reduced} />
+          <Line key={s.id} data={s.points} dataKey="t" name={s.label} stroke={s.color} strokeDasharray={SCENARIO_STYLE[s.id].dash} strokeWidth={2} dot={s.id === "modified" ? { r: 3, strokeWidth: 0, fill: s.color } : { r: 2.5 }} isAnimationActive={!reduced} />
         ))}
       </LineChart>
     </ChartFrame>

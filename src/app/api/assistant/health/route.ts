@@ -1,35 +1,59 @@
+import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { aiConfig, deploymentInfo, lastProviderHealth, probeProvider } from "@/lib/ai/gemini.server";
-import { clientKeyFrom } from "@/lib/ai/rateLimit.server";
+import { aiConfig, deploymentInfo, lastProviderHealth, modelVisibility, probeProvider } from "@/lib/ai/gemini.server";
+import { clientKeyFrom, getRateLimiter } from "@/lib/ai/rateLimit.server";
 import type { AssistantStatus } from "@/lib/ai/types";
 
-export const maxDuration = 20;
+export const maxDuration = 25;
 
-// Per-instance throttle for live probes; the probe result itself is cached (10 min ok / 1 min failure).
-const lastProbeByClient = new Map<string, number>();
-const PROBE_INTERVAL_MS = 15_000;
+const noStore = { "Cache-Control": "no-store" };
+
+function hasDiagnosticsToken(request: Request) {
+  const expected = process.env.AI_DIAGNOSTICS_TOKEN?.trim();
+  if (!expected || expected.length < 16) return false;
+  const given = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
- * Readiness check. Without ?probe=1 it reports configuration and the last known provider result.
- * With ?probe=1 it makes one real, bounded Gemini request (production request format) to verify
- * key authorization, model availability and schema compatibility. Never returns the key.
+ * Readiness check.
+ *  • No params: configuration, deployment identity and the last real provider result. No provider call.
+ *  • ?probe=1 (same-origin page requests): one real bounded Gemini request, cached per instance
+ *    (10 min success / 2 min failure) and charged to the normal AI rate limits.
+ *  • Authorization: Bearer $AI_DIAGNOSTICS_TOKEN: forces a fresh probe and lists which Flash-Lite
+ *    models the API project can see. Never returns the key.
  */
 export async function GET(request: Request) {
   const cfg = aiConfig();
-  const wantsProbe = new URL(request.url).searchParams.get("probe") === "1";
+  const params = new URL(request.url).searchParams;
+  const admin = hasDiagnosticsToken(request);
   let provider = lastProviderHealth();
+  let note: string | undefined;
 
-  if (wantsProbe && cfg.apiKey) {
-    const key = await clientKeyFrom(request.headers);
-    const now = Date.now();
-    const last = lastProbeByClient.get(key) ?? 0;
-    if (now - last >= PROBE_INTERVAL_MS || !provider) {
-      lastProbeByClient.set(key, now);
-      if (lastProbeByClient.size > 2000) lastProbeByClient.clear();
-      provider = await probeProvider();
+  if (params.get("probe") === "1" && cfg.apiKey) {
+    const site = request.headers.get("sec-fetch-site");
+    const sameOrigin = site === "same-origin" || site === "none";
+    if (admin) {
+      provider = await probeProvider(undefined, { force: true });
+    } else if (!sameOrigin) {
+      note = "Live probes are limited to the app itself or requests with the diagnostics token.";
+    } else {
+      const limit = await getRateLimiter().check(await clientKeyFrom(request.headers));
+      if (limit.allowed) provider = await probeProvider();
+      else note = "Probe skipped: rate limit reached. Showing the last known result.";
     }
   }
 
-  const body: AssistantStatus = { configured: !!cfg.apiKey, model: cfg.model, deployment: deploymentInfo(), provider };
-  return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
+  const body: AssistantStatus & { note?: string; models?: Awaited<ReturnType<typeof modelVisibility>> } = {
+    configured: !!cfg.apiKey,
+    model: cfg.model,
+    deployment: deploymentInfo(),
+    provider,
+    configNotes: cfg.configNotes,
+    ...(note ? { note } : {}),
+  };
+  if (admin && params.get("models") === "1") body.models = await modelVisibility();
+  return NextResponse.json(body, { headers: noStore });
 }

@@ -29,7 +29,11 @@ type Result = { status: number; body: AssistantResponse };
 const STATUS: Record<AssistantErrorCode, number> = {
   not_configured: 503,
   invalid_key: 503,
+  key_restricted: 503,
   model_unavailable: 503,
+  model_unsupported: 503,
+  provider_rate_limited: 429,
+  internal_error: 500,
   request_rejected: 502,
   quota: 429,
   rate_limited: 429,
@@ -116,6 +120,43 @@ async function resolveVehicle(q: VehicleQuery, deps: AssistantDeps): Promise<{ p
   };
 }
 
+const STATUS_WORDS: [RegExp, string][] = [
+  [/non[- ]?feasible|infeasible|not feasible|conflicts with modeled constraints/i, "non_feasible"],
+  [/insufficient data/i, "insufficient_data"],
+  [/questionable|requires further verification/i, "questionable"],
+  [/(?<!non[- ]?)\bfeasible within modeled constraints\b|(?<![-\w])feasible(?![-\w])/i, "feasible"],
+];
+
+function statusesIn(text: string) {
+  const out = new Set<string>();
+  let rest = text;
+  for (const [re, s] of STATUS_WORDS) {
+    if (re.test(rest)) {
+      out.add(s);
+      rest = rest.replace(new RegExp(re.source, "gi"), " ");
+    }
+  }
+  return out;
+}
+
+/** True when a sentence attributes a feasibility status to a scenario that the engine did not assign. */
+export function contradictsFeasibility(reply: string, lines: string[]) {
+  const engine: Record<string, string> = {};
+  for (const l of lines) {
+    const m = l.match(/^(Stock|Modified) feasibility: ([^.]+)\./);
+    if (m) engine[m[1].toLowerCase()] = [...statusesIn(m[2])][0] ?? "";
+  }
+  const all = new Set(Object.values(engine));
+  return reply.split(/(?<=[.!?;])\s+/).some((sentence) => {
+    const claimed = statusesIn(sentence);
+    if (!claimed.size) return false;
+    const mod = /modif/i.test(sentence);
+    const stock = /stock|factory/i.test(sentence);
+    const allowed = mod && !stock && engine.modified ? new Set([engine.modified]) : stock && !mod && engine.stock ? new Set([engine.stock]) : all;
+    return [...claimed].some((c) => !allowed.has(c));
+  });
+}
+
 export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps): Promise<Result> {
   const maybe = raw as { message?: unknown; requestId?: unknown } | null;
   const requestId = typeof maybe?.requestId === "string" ? maybe.requestId.slice(0, 64) : undefined;
@@ -140,7 +181,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
       new Promise<ModelCallResult>((resolve) => controller.signal.addEventListener("abort", () => resolve({ ok: false, code: "timeout" }))),
     ]);
   } catch {
-    call = { ok: false, code: "server_error" };
+    call = { ok: false, code: "internal_error" };
   } finally {
     clearTimeout(timer);
   }
@@ -199,6 +240,15 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   const unverified = unverifiedFigures(reply, known);
   if (unverified.length) {
     notices.push(`This reply mentions figures that are not in AutoDyn's data for this session (${unverified.join(", ")}). Treat them as unverified.`);
+  }
+  const feasibilityLines = req.context.results?.feasibility ?? [];
+  if (feasibilityLines.length && contradictsFeasibility(reply, feasibilityLines)) {
+    notices.push(
+      `AutoDyn's deterministic feasibility assessment is authoritative: ${feasibilityLines
+        .filter((l) => /feasibility:/.test(l))
+        .map((l) => l.split(". ")[0])
+        .join("; ")}.`,
+    );
   }
   if (req.context.results?.stale && ["explain", "sensitivity", "assumptions"].includes(output.intent)) {
     notices.push("Inputs changed since the last analysis, so the explanation may not match the current configuration. Re-run the analysis.");

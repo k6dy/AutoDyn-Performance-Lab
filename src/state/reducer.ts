@@ -4,7 +4,7 @@
 import type { AssistantErrorCode, Proposal, SuggestedAction } from "@/lib/ai/types";
 import { resultsSummary } from "@/lib/analysis/summary";
 import { setModifiedValue, setStockValue } from "@/lib/domain/scenario";
-import type { AnalysisConfig, Conditions, ScenarioId, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
+import type { AnalysisConfig, Conditions, ConstraintKey, ScenarioId, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
 import type { AnalysisResult } from "@/lib/physics/analysis";
@@ -78,6 +78,7 @@ export type Action =
   | { type: "createModified" }
   | { type: "deleteModified" }
   | { type: "setConditions"; patch: Partial<Conditions> }
+  | { type: "setConstraint"; scenario: ScenarioId; key: ConstraintKey; value: number | null }
   | { type: "setMode"; mode: Mode }
   | { type: "setEditing"; scenario: ScenarioId }
   | { type: "setView"; view: ResultsView }
@@ -114,7 +115,7 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case "loadVehicle":
       return {
-        ...withConfig(state, { stock: action.specSet, modified: null, conditions: state.config.conditions }),
+        ...withConfig(state, { stock: action.specSet, modified: null, conditions: state.config.conditions, constraints: {} }),
         baseline: action.specSet,
         ui: { ...state.ui, editing: "stock" },
       };
@@ -146,7 +147,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "resetAll":
       // Back to the vehicle exactly as loaded from its source, no modified scenario, standard conditions.
       return {
-        ...withConfig(state, { stock: state.baseline, modified: null, conditions: { ...DEFAULT_CONDITIONS } }),
+        ...withConfig(state, { stock: state.baseline, modified: null, conditions: { ...DEFAULT_CONDITIONS }, constraints: {} }),
         ui: { ...state.ui, editing: "stock", ackRevision: null },
       };
     case "startFresh":
@@ -162,9 +163,18 @@ export function reducer(state: AppState, action: Action): AppState {
         ui: { ...state.ui, editing: "modified" },
       };
     case "deleteModified":
-      return { ...withConfig(state, { ...state.config, modified: null }), ui: { ...state.ui, editing: "stock" } };
+      return {
+        ...withConfig(state, { ...state.config, modified: null, constraints: { stock: state.config.constraints?.stock } }),
+        ui: { ...state.ui, editing: "stock" },
+      };
     case "setConditions":
       return withConfig(state, { ...state.config, conditions: { ...state.config.conditions, ...action.patch } });
+    case "setConstraint": {
+      const current = state.config.constraints?.[action.scenario] ?? {};
+      const next = { ...current, [action.key]: action.value };
+      if (action.value == null) delete (next as Record<string, unknown>)[action.key];
+      return withConfig(state, { ...state.config, constraints: { ...state.config.constraints, [action.scenario]: next } });
+    }
     case "setMode":
       return { ...state, ui: { ...state.ui, mode: action.mode } };
     case "setEditing":

@@ -60,7 +60,9 @@ const routes: Record<string, Handler> = {
   },
 };
 
+const defaultAssistantRoute = routes["/api/assistant"];
 beforeEach(() => {
+  routes["/api/assistant"] = defaultAssistantRoute;
   aiConfigured = true;
   modelOutput = null;
   failNhtsa = false;
@@ -178,7 +180,7 @@ describe("Basic Setup", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
     setField("d-peakPowerKw", "+40");
     setField("d-curbMassKg", "-150");
-    expect(screen.getByText(/Modified: 281 hp · Stock: 241 hp/)).toBeTruthy();
+    expect(document.getElementById("d-peakPowerKw-hint")!.textContent).toMatch(/Modified: 281 hp · Stock: 241 hp/);
     expect(fieldValue("f-peakPowerKw")).toBe("241"); // stock untouched
     fireEvent.click(runButton());
     const power = await metricRow(/Peak power/);
@@ -576,10 +578,10 @@ describe("vehicle weight", () => {
     await loadC300();
     fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
     setField("d-curbMassKg", "-150");
-    expect(screen.getByText(/Modified: 3267 lb · Stock: 3417 lb/)).toBeTruthy();
+    expect(document.getElementById("d-curbMassKg-hint")!.textContent).toMatch(/Modified: 3267 lb · Stock: 3417 lb/);
     expect(fieldValue("f-curbMassKg")).toBe("3417");
     setField("f-curbMassKg", "3500");
-    expect(screen.getByText(/Modified: 3350 lb · Stock: 3500 lb/)).toBeTruthy();
+    expect(document.getElementById("d-curbMassKg-hint")!.textContent).toMatch(/Modified: 3350 lb · Stock: 3500 lb/);
     fireEvent.click(runButton());
     const row = await metricRow(/Test mass/);
     expect(row.textContent).toMatch(/3,676[\s\S]*3,526[\s\S]*−150/); // + 176 lb driver
@@ -597,6 +599,117 @@ describe("vehicle weight", () => {
     const kg = Number(fieldValue("f-curbMassKg"));
     fireEvent.click(screen.getByRole("radio", { name: "Imperial" }));
     expect(Number(fieldValue("f-curbMassKg"))).toBeCloseTo(kg / 0.45359237, -1);
+  });
+});
+
+describe("feasibility and semantic colors", () => {
+  async function runCompare(power = "+40") {
+    renderApp();
+    await loadC300();
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-peakPowerKw", power);
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+  }
+
+  it("Results show Stock Feasible and Modified Questionable with text labels and reasons", async () => {
+    await runCompare();
+    const stock = screen.getByTestId("feasibility-stock");
+    const mod = screen.getByTestId("feasibility-modified");
+    expect(stock.querySelector("[data-feasibility]")!.getAttribute("data-feasibility")).toBe("feasible");
+    expect(stock.textContent).toMatch(/Feasible within modeled constraints/);
+    expect(mod.querySelector("[data-feasibility]")!.getAttribute("data-feasibility")).toBe("questionable");
+    expect(mod.textContent).toMatch(/Requires further verification/);
+    expect(mod.textContent).toMatch(/no component ratings available/);
+    // Scenario identity (blue/orange + shape + text) is separate from the status color.
+    expect(stock.querySelector('[data-scenario="stock"]')!.className).toMatch(/text-stock/);
+    expect(mod.querySelector('[data-scenario="modified"]')!.className).toMatch(/text-modified/);
+    expect(mod.querySelector("[data-feasibility]")!.className).toMatch(/text-questionable/);
+  });
+
+  it("View Engineering Assessment expands constraints, inputs, assumptions and missing information", async () => {
+    await runCompare();
+    const mod = screen.getByTestId("feasibility-modified");
+    const toggle = within(mod).getByRole("button", { name: /View Engineering Assessment/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const driveline = mod.querySelector('[data-check="mechanical.driveline"]')!;
+    expect(driveline.getAttribute("data-outcome")).toBe("caution");
+    expect(driveline.textContent).toMatch(/Needs verification/);
+    expect(within(mod).getByText("Inputs evaluated")).toBeTruthy();
+    expect(within(mod).getByText("Missing information")).toBeTruthy();
+    expect(mod.textContent).toMatch(/Drivetrain torque rating/);
+  });
+
+  it("a claim entered in Advanced Settings that breaks the traction limit is Non-feasible with the reason", async () => {
+    renderApp();
+    await loadC300();
+    openAdvanced();
+    setField("k-claimedZeroTo60S", "2.0");
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+    const stock = screen.getByTestId("feasibility-stock");
+    expect(stock.querySelector("[data-feasibility]")!.getAttribute("data-feasibility")).toBe("non_feasible");
+    expect(stock.textContent).toMatch(/Conflicts with modeled constraints/);
+    expect(stock.textContent).toMatch(/needs an average 1\.37 g/);
+  });
+
+  it("chart legends use Stock blue and Modified orange, with labeled traction-limit lines", async () => {
+    await runCompare();
+    // jsdom does not lay out the animated line paths; legends carry the same series colors.
+    // (Line strokes and dash patterns are verified in the real-browser e2e test.)
+    const icons = [...document.querySelectorAll(".recharts-legend-icon")].map((p) => `${p.getAttribute("stroke") ?? ""}${p.getAttribute("fill") ?? ""}`.toUpperCase());
+    expect(icons.some((c) => c.includes("#79A7FF"))).toBe(true);
+    expect(icons.some((c) => c.includes("#E87942"))).toBe(true);
+    expect(document.body.textContent).not.toMatch(/#8FA7BD|#D46A2C/i);
+    expect(document.body.textContent).toMatch(/Stock traction limit \d\.\d\d g/);
+  });
+
+  it("invalid inputs are red errors; unusual inputs are amber warnings", async () => {
+    renderApp();
+    await loadC300();
+    openAdvanced();
+    setField("f-dragCoefficient", "423");
+    const cd = document.getElementById("f-dragCoefficient")!;
+    expect(cd.className).toMatch(/border-error/);
+    const cdMsg = document.getElementById("f-dragCoefficient-hint")!.querySelector(".text-error");
+    expect(cdMsg!.textContent).toMatch(/^Invalid:/);
+    fireEvent.click(screen.getAllByRole("button", { name: /Use AutoDyn default/ })[0]);
+    setField("f-peakPowerKw", "1900");
+    setField("f-peakTorqueNm", "2000");
+    const warn = document.getElementById("f-peakPowerKw-hint")!.querySelector(".text-warning");
+    expect(warn!.textContent).toMatch(/^Unusual:/);
+    expect(document.getElementById("f-peakPowerKw")!.className).not.toMatch(/border-error/);
+  });
+
+  it("editing an input after a run marks feasibility and results stale", async () => {
+    await runCompare();
+    fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
+    setField("d-peakPowerKw", "+60");
+    fireEvent.click(screen.getByRole("tab", { name: /Results/ }));
+    expect(await screen.findByText(/computed for an earlier configuration/)).toBeTruthy();
+  });
+});
+
+describe("AI diagnostics display", () => {
+  it("shows the exact provider failure, HTTP status and configuration notes without secrets", async () => {
+    routes["/api/assistant"] = async () =>
+      Response.json({
+        configured: true,
+        model: "gemini-3.5-flash-lite",
+        deployment: { ...deployment, project: "auto-dyn-performance.vercel.app" },
+        provider: { status: "model_unavailable", model: "gemini-3.5-flash-lite", httpStatus: 404, reason: "NOT_FOUND", checkedAt: new Date().toISOString(), latencyMs: 210, source: "probe" },
+        configNotes: ["GEMINI_MODEL normalized to “gemini-3.5-flash-lite”."],
+      });
+    renderApp();
+    fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
+    expect(await screen.findByText("AI assistance is temporarily unavailable. Manual Setup is still ready to use.")).toBeTruthy();
+    expect(screen.getByText(/wasn't found for this API project/)).toBeTruthy();
+    expect(screen.getByText(/provider response: HTTP 404 · NOT_FOUND/)).toBeTruthy();
+    expect(screen.getByText(/Configuration: GEMINI_MODEL normalized/)).toBeTruthy();
+    expect(screen.getByText(/auto-dyn-performance\.vercel\.app · autodyn-v2 @ abc1234/)).toBeTruthy();
+    expect((screen.getByLabelText(/Message the AI Build Assistant/) as HTMLTextAreaElement).disabled).toBe(true);
   });
 });
 

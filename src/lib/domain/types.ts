@@ -99,6 +99,24 @@ export type Conditions = {
   rollout: boolean;
 };
 
+/**
+ * Optional, explicitly supplied engineering constraints and performance claims (SI). They are
+ * not physics inputs: the feasibility engine checks the configuration and results against them.
+ */
+export type ScenarioConstraints = {
+  /** Claimed 0–60 mph time, s. */
+  claimedZeroTo60S?: number | null;
+  /** Claimed top speed, m/s. */
+  claimedTopSpeedMs?: number | null;
+  /** Stated torque capacity of the transmission/driveline (engine-side), N·m. */
+  drivetrainTorqueLimitNm?: number | null;
+  /** Stated tire speed rating, m/s. */
+  tireSpeedRatingMs?: number | null;
+};
+
+export const CONSTRAINT_KEYS = ["claimedZeroTo60S", "claimedTopSpeedMs", "drivetrainTorqueLimitNm", "tireSpeedRatingMs"] as const;
+export type ConstraintKey = (typeof CONSTRAINT_KEYS)[number];
+
 export type ModifiedScenario = {
   overrides: Partial<SpecValues>;
 };
@@ -109,6 +127,8 @@ export type AnalysisConfig = {
   stock: SpecSet | null;
   modified: ModifiedScenario | null;
   conditions: Conditions;
+  /** Per-scenario claims and component ratings; Modified inherits Stock's unless overridden. */
+  constraints?: { stock?: ScenarioConstraints; modified?: ScenarioConstraints };
 };
 
 export const DEFAULT_CONDITIONS: Conditions = {

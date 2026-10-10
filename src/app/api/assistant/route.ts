@@ -14,7 +14,7 @@ const MAX_BODY = 64_000;
 /** Configuration status only (no provider call). Use /api/assistant/health?probe=1 for a live check. */
 export async function GET() {
   const cfg = aiConfig();
-  const body: AssistantStatus = { configured: !!cfg.apiKey, model: cfg.model, deployment: deploymentInfo(), provider: lastProviderHealth() };
+  const body: AssistantStatus = { configured: !!cfg.apiKey, model: cfg.model, deployment: deploymentInfo(), provider: lastProviderHealth(), configNotes: cfg.configNotes };
   return NextResponse.json(body, { headers: noStore });
 }
 

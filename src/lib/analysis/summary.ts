@@ -16,5 +16,9 @@ export function resultsSummary(result: AnalysisResult, units: UnitSystem) {
     return `${r.label} ${fmt(r.stock, r.digits, r.unit)} → ${fmt(r.modified, r.digits, r.unit)}${delta}`;
   };
   const head = `Physics engine results for ${vehicleLabel(result.identity)}${result.modified ? ", stock → modified" : ""}:`;
-  return `${head}\n- ${line("060")}\n- ${line("qm")}\n- ${line("trap")}\n- ${line("ptw")}`;
+  const feas = [result.feasibility.stock, result.feasibility.modified]
+    .filter((a): a is NonNullable<typeof a> => !!a)
+    .map((a) => `- Feasibility (${a.scenario === "stock" ? "Stock" : "Modified"}): ${a.headline}`)
+    .join("\n");
+  return `${head}\n- ${line("060")}\n- ${line("qm")}\n- ${line("trap")}\n- ${line("ptw")}${feas ? `\n${feas}` : ""}`;
 }

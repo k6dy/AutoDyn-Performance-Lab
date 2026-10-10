@@ -16,13 +16,15 @@ import { useApp } from "@/state/AppProvider";
 import type { ProposalState } from "@/state/reducer";
 
 const CONDITION_META: Record<string, { label: string; quantity?: Quantity }> = {
+  claimedZeroTo60S: { label: "Claimed 0–60 mph", quantity: "time" },
+  claimedTopSpeedMs: { label: "Claimed top speed", quantity: "speed" },
   ambientTempC: { label: "Air temperature", quantity: "temperature" },
   elevationM: { label: "Elevation", quantity: "elevation" },
   surface: { label: "Road surface" },
 };
 
 function meta(change: ProposedChange) {
-  if (change.target === "conditions") return CONDITION_META[change.key] ?? { label: change.key };
+  if (change.target === "conditions" || CONDITION_META[change.key]) return CONDITION_META[change.key] ?? { label: change.key };
   const def = NUMERIC_FIELDS[change.key as NumericSpecKey];
   return { label: SPEC_LABEL[change.key as SpecKey] ?? change.key, quantity: def?.quantity };
 }
@@ -98,7 +100,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
     <section aria-label="Review changes" className={cx("animate-enter rounded-lg border bg-surface", pending ? "border-accent/45" : "border-line opacity-90")}>
       <header className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5">
         <h3 className="text-[14px] font-semibold">Review changes</h3>
-        <span className={cx("text-[11px] font-medium tracking-wide uppercase", pending ? "text-accent" : ps.status === "applied" ? "text-gain" : "text-faint")}>
+        <span className={cx("text-[11px] font-medium tracking-wide uppercase", pending ? "text-accent" : ps.status === "applied" ? "text-success" : "text-faint")}>
           {ps.status === "pending" ? "Needs your approval" : ps.status}
         </span>
       </header>
@@ -116,7 +118,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
             {identifyOnly && (
               <div>
                 <div className="font-medium text-ink">{proposal.vehicle.label}</div>
-                <p className="mt-0.5 text-xs leading-4 text-caution">{proposal.vehicle.note}</p>
+                <p className="mt-0.5 text-xs leading-4 text-warning">{proposal.vehicle.note}</p>
               </div>
             )}
             {proposal.vehicle.kind === "choose" && (
@@ -141,11 +143,11 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                   );
                 })}
                 {choosing && <LoadingStage make={proposal.vehicle.make} label="Loading verified specifications" compact />}
-                {chooseError && <p className="text-xs text-loss">{chooseError}</p>}
+                {chooseError && <p className="text-xs text-error">{chooseError}</p>}
               </fieldset>
             )}
             {vehicle && state.config.stock && pending && (
-              <p className="text-xs leading-4 text-caution">
+              <p className="text-xs leading-4 text-warning">
                 Replaces {vehicleLabel(state.config.stock.identity)}
                 {state.config.modified ? " and clears its modified scenario." : "."}
               </p>
@@ -179,11 +181,11 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                           <ProvenanceTag provenance="user" title="User-provided assumption" />
                         </span>
                         <span className="num mt-0.5 block text-[13px] text-muted">
-                          {show(row.from, m.quantity, units)} → <span className="text-accent">{row.to == null ? "—" : show(row.to, m.quantity, units)}</span>
+                          {show(row.from, m.quantity, units)} → <span className={c.target === "modified" ? "text-modified" : c.target === "stock" ? "text-stock" : "text-ink"}>{row.to == null ? "—" : show(row.to, m.quantity, units)}</span>
                           <span className="ml-1 text-xs text-faint">({c.display})</span>
                         </span>
-                        {!c.statedByUser && <span className="mt-0.5 block text-[11.5px] text-caution">You didn&apos;t state this number — check it before applying.</span>}
-                        {row.error && <span className="mt-0.5 block text-[11.5px] text-loss">{row.error}</span>}
+                        {!c.statedByUser && <span className="mt-0.5 block text-[11.5px] text-warning">You didn&apos;t state this number — check it before applying.</span>}
+                        {row.error && <span className="mt-0.5 block text-[11.5px] text-error">{row.error}</span>}
                       </span>
                     </label>
                     {editable && (
@@ -227,7 +229,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
             <ul className="space-y-1 text-faint">
               {proposal.rejected.map((r, i) => (
                 <li key={i}>
-                  {r.text} — <span className="text-caution">{r.reason}</span>
+                  {r.text} — <span className="text-warning">{r.reason}</span>
                 </li>
               ))}
             </ul>
@@ -238,9 +240,9 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
           <div className="space-y-2 rounded-md border border-line bg-bg/60 px-3 py-2">
             <div className="text-xs font-medium text-muted">Validation</div>
             <IssueList issues={newIssues} actions={false} />
-            {newErrors.length > 0 && <p className="text-xs text-loss">Adjust the values or cancel — invalid inputs can&apos;t be applied.</p>}
+            {newErrors.length > 0 && <p className="text-xs text-error">Adjust the values or cancel — invalid inputs can&apos;t be applied.</p>}
             {newErrors.length === 0 && newWarnings.length > 0 && (
-              <label className="flex items-start gap-2 text-xs text-[#e9cf98]">
+              <label className="flex items-start gap-2 text-xs text-[#f1d39e]">
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]" />
                 Apply these unusual values anyway.
               </label>

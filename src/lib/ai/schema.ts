@@ -28,6 +28,7 @@ export const contextSchema = z
         findings: z.array(shortText(500)).max(14),
         sensitivity: z.array(shortText(160)).max(10),
         estimatedInputs: z.array(shortText(160)).max(20),
+        feasibility: z.array(shortText(700)).max(12).optional(),
         dataQuality: shortText(80),
       })
       .nullable(),

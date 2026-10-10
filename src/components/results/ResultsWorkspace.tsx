@@ -3,7 +3,9 @@
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Download, FileJson, Info, Printer, RefreshCw, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { ScenarioTag } from "@/components/ui";
 import LoadingStage from "@/components/LoadingStage";
+import FeasibilityPanel from "@/components/results/FeasibilityPanel";
 import { AccelChart, CurveChart, MassSweepChart, SensitivityChart, SpeedTimeChart } from "@/components/results/Charts";
 import { AnimatedNumber, Button, cx, Notice, Panel, ProvenanceTag, Segmented, Spinner } from "@/components/ui";
 import { explainAnalysis, type Finding } from "@/lib/analysis/explain";
@@ -54,7 +56,7 @@ function Delta({ row }: { row: MetricRow }) {
   const d = rowDelta(row);
   if (!d) return <span className="text-faint">—</span>;
   if (Math.abs(d.abs) < Math.pow(10, -row.digits) / 2) return <span className="text-faint">no change</span>;
-  const color = d.improved == null ? "text-muted" : d.improved ? "text-gain" : "text-loss";
+  const color = d.improved == null ? "text-muted" : d.improved ? "text-success" : "text-ink";
   const Icon = d.abs > 0 ? ArrowUpRight : ArrowDownRight;
   return (
     <span className={cx("num inline-flex items-center gap-1 whitespace-nowrap text-[13px]", color)}>
@@ -78,8 +80,8 @@ function MetricsTable({ result, view, units }: { result: AnalysisResult; view: R
         <thead>
           <tr className="border-b border-line text-xs text-muted">
             <th scope="col" className="px-4 py-2.5 font-medium">Metric</th>
-            {showStock && <th scope="col" className="px-4 py-2.5 font-medium"><span className="inline-block h-2 w-2 rounded-full bg-stock align-middle" /> Stock</th>}
-            {showMod && <th scope="col" className="px-4 py-2.5 font-medium"><span className="inline-block h-2 w-2 rounded-full bg-accent align-middle" /> Modified</th>}
+            {showStock && <th scope="col" className="px-4 py-2.5 font-medium"><ScenarioTag scenario="stock" /></th>}
+            {showMod && <th scope="col" className="px-4 py-2.5 font-medium"><ScenarioTag scenario="modified" /></th>}
             {showDelta && <th scope="col" className="px-4 py-2.5 font-medium">Difference</th>}
           </tr>
         </thead>
@@ -106,9 +108,9 @@ function MetricsTable({ result, view, units }: { result: AnalysisResult; view: R
 }
 
 const TONE: Record<Finding["tone"], { icon: typeof Info; cls: string }> = {
-  gain: { icon: TrendingUp, cls: "text-gain" },
-  loss: { icon: TrendingDown, cls: "text-loss" },
-  limit: { icon: AlertTriangle, cls: "text-caution" },
+  gain: { icon: TrendingUp, cls: "text-success" },
+  loss: { icon: TrendingDown, cls: "text-ink" },
+  limit: { icon: AlertTriangle, cls: "text-warning" },
   info: { icon: Info, cls: "text-stock" },
   confidence: { icon: ShieldCheck, cls: "text-muted" },
 };
@@ -309,6 +311,8 @@ export default function ResultsWorkspace() {
       )}
 
       <MetricsTable result={result} view={view} units={units} />
+
+      <FeasibilityPanel stock={view === "modified" ? null : result.feasibility.stock} modified={view === "stock" ? null : result.feasibility.modified} />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <SpeedTimeChart stock={stock} modified={modified} units={units} />

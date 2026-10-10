@@ -98,7 +98,7 @@ export default function WeightField({ b, issue }: { b: Binding; issue?: Issue })
         <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-xs text-faint">{unit}</span>
       </div>
       <div id="f-curbMassKg-hint" className="mt-1 space-y-1.5 text-[12px] leading-4">
-        {issue && v.value != null && <div className={issue.severity === "error" ? "text-loss" : "text-caution"}>{issue.message}</div>}
+        {issue && v.value != null && <div className={issue.severity === "error" ? "text-error" : "text-warning"}>{issue.message}</div>}
         {v.value == null && (
           <div className="rounded-md border border-line bg-bg/60 px-3 py-2.5" data-testid="weight-estimate">
             <p className="text-muted">

@@ -96,7 +96,16 @@ function DeltaField({ k, label, chips }: { k: NumericSpecKey; label: string; chi
   };
   return (
     <div className="min-w-0">
-      <Row label={label} htmlFor={`d-${k}`} unit={unit} hint={`Modified: ${formatDisplay(def, mod ?? stock, units)} ${unit} · Stock: ${formatDisplay(def, stock, units)} ${unit}`}>
+      <Row
+        label={label}
+        htmlFor={`d-${k}`}
+        unit={unit}
+        hint={
+          <>
+            <span className="text-modified">Modified: {formatDisplay(def, mod ?? stock, units)} {unit}</span> · <span className="text-stock">Stock: {formatDisplay(def, stock, units)} {unit}</span>
+          </>
+        }
+      >
         <CommitInput
           id={`d-${k}`}
           value={delta === 0 ? "" : `${delta > 0 ? "+" : ""}${delta}`}
@@ -258,7 +267,7 @@ export function ConditionsSummary() {
     c.elevationM === 0 ? "sea level" : `${Math.round(toDisplay("elevation", c.elevationM, units)).toLocaleString()} ${unitLabel("elevation", units)} elevation`
   }`;
   return (
-    <div className={cx("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3 text-[13px] sm:px-5", standard ? "border-line bg-surface" : "border-caution/40 bg-caution/5")}>
+    <div className={cx("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3 text-[13px] sm:px-5", standard ? "border-line bg-surface" : "border-warning/40 bg-warning/5")}>
       <span className="min-w-0">
         <span className="font-medium text-ink">{standard ? "Standard conditions" : "Non-standard conditions"}</span>
         <span className="ml-2 text-muted">{text}</span>

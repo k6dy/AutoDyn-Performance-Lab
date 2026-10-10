@@ -50,6 +50,8 @@ export function buildJsonReport(result: AnalysisResult, units: UnitSystem) {
     scenarios: { stock: scenario("stock"), modified: scenario("modified") },
     comparison: metricRows(result, units).map((row) => ({ ...row, delta: rowDelta(row) })),
     attribution: result.attribution,
+    feasibility: result.feasibility,
+    colorLegend: { stock: "#79A7FF", modified: "#E87942", feasible: "#50C49A", questionable: "#E9B35B", nonFeasible: "#E45B70", insufficientData: "#9299A3" },
     findings,
     limitations,
   };
@@ -95,6 +97,13 @@ export function buildCsvReport(result: AnalysisResult, units: UnitSystem) {
         b ? b.value || "unavailable" : "", mv ? result.modified!.provenance[k] ?? mv[k].provenance : "",
       ]),
     );
+  }
+  lines.push("");
+  lines.push(csvLine(["Feasibility", "Scenario", "Status", "Constraint", "Outcome", "Detail"]));
+  for (const a of [result.feasibility.stock, result.feasibility.modified]) {
+    if (!a) continue;
+    lines.push(csvLine(["Feasibility", a.scenario, a.headline, "Primary reason", "", a.primaryReason]));
+    for (const c of a.checks) lines.push(csvLine(["Constraint", a.scenario, "", c.label, c.outcome, c.detail]));
   }
   lines.push("");
   lines.push(csvLine(["Conditions", `${result.conditions.ambientTempC} °C`, `${result.conditions.elevationM} m`, result.conditions.surface, result.conditions.rollout ? "1-ft rollout" : "no rollout"]));

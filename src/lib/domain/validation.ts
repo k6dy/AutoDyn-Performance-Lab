@@ -20,7 +20,7 @@ import type {
   SpecValues,
   VehicleIdentity,
 } from "@/lib/domain/types";
-import { NUMERIC_KEYS } from "@/lib/domain/types";
+import { CONSTRAINT_KEYS, NUMERIC_KEYS, type ConstraintKey, type ScenarioConstraints } from "@/lib/domain/types";
 import { resolveInputs } from "@/lib/physics/resolve";
 import { radSToRpm, rpmToRadS } from "@/lib/units";
 
@@ -178,6 +178,24 @@ export function validateConditions(c: Conditions): Issue[] {
   return issues;
 }
 
+const CONSTRAINT_RANGES: Record<ConstraintKey, { label: string; min: number; max: number; message: string }> = {
+  claimedZeroTo60S: { label: "Claimed 0–60 mph", min: 0.5, max: 120, message: "Claimed 0–60 time must be a positive time in seconds." },
+  claimedTopSpeedMs: { label: "Claimed top speed", min: 5, max: 200, message: "Claimed top speed must be a positive speed below 447 mph (720 km/h)." },
+  drivetrainTorqueLimitNm: { label: "Drivetrain torque rating", min: 10, max: 20000, message: "Drivetrain torque rating must be a positive torque." },
+  tireSpeedRatingMs: { label: "Tire speed rating", min: 10, max: 150, message: "Tire speed rating must be a positive speed below 335 mph." },
+};
+
+export function validateConstraints(c: ScenarioConstraints | undefined, scenario: ScenarioId): Issue[] {
+  const out: Issue[] = [];
+  for (const key of CONSTRAINT_KEYS) {
+    const v = c?.[key];
+    if (v == null) continue;
+    const r = CONSTRAINT_RANGES[key];
+    if (!Number.isFinite(v) || v < r.min || v > r.max) out.push({ id: `${scenario}:${key}`, severity: "error", scenario, key: key as never, message: r.message });
+  }
+  return out;
+}
+
 export function validateConfig(config: AnalysisConfig) {
   const issues: Issue[] = [];
   if (!config.stock) {
@@ -193,6 +211,8 @@ export function validateConfig(config: AnalysisConfig) {
     issues.push(...validateValues(effectiveValues(config, "modified")!, "modified", config.stock.identity, stock));
   }
   issues.push(...validateConditions(config.conditions));
+  issues.push(...validateConstraints(config.constraints?.stock, "stock"));
+  if (config.modified) issues.push(...validateConstraints(config.constraints?.modified, "modified"));
   return {
     issues,
     errors: issues.filter((i) => i.severity === "error").length,

@@ -67,17 +67,17 @@ function ConnectionBar() {
   const bad = aiStatus.phase === "unavailable" || aiStatus.phase === "degraded";
   const d = aiStatus.deployment;
   return (
-    <div className={cx("border-b px-4 py-2.5 sm:px-5", bad ? "border-caution/30 bg-caution/5" : "border-line")} data-ai-phase={aiStatus.phase}>
+    <div className={cx("border-b px-4 py-2.5 sm:px-5", bad ? "border-warning/30 bg-warning/5" : "border-line")} data-ai-phase={aiStatus.phase}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2 text-[13px]">
           <span
             aria-hidden
             className={cx(
               "h-2 w-2 shrink-0 rounded-full",
-              aiStatus.phase === "ready" ? "bg-gain" : aiStatus.phase === "checking" ? "loading-dot bg-accent" : bad ? "bg-caution" : "bg-faint",
+              aiStatus.phase === "ready" ? "bg-success" : aiStatus.phase === "checking" ? "loading-dot bg-accent" : bad ? "bg-warning" : "bg-faint",
             )}
           />
-          <span className={cx("min-w-0", bad ? "text-[#e9cf98]" : "text-muted")}>{bad ? AI_UNAVAILABLE_MESSAGE : statusText(aiStatus)}</span>
+          <span className={cx("min-w-0", bad ? "text-[#f1d39e]" : "text-muted")}>{bad ? AI_UNAVAILABLE_MESSAGE : statusText(aiStatus)}</span>
         </div>
         <div className="flex gap-2">
           {aiStatus.phase !== "checking" && aiStatus.code !== "not_configured" && (
@@ -92,10 +92,22 @@ function ConnectionBar() {
           )}
         </div>
       </div>
-      {bad && aiStatus.code && <p className="mt-1 text-xs leading-4 text-muted">Reason: {PROVIDER_MESSAGES[aiStatus.code]}</p>}
+      {bad && aiStatus.code && (
+        <p className="mt-1 text-xs leading-4 text-muted">
+          Reason: {PROVIDER_MESSAGES[aiStatus.code]}
+          {aiStatus.detail && <span className="text-faint"> (provider response: {aiStatus.detail})</span>}
+        </p>
+      )}
+      {aiStatus.servedBy && <p className="mt-1 text-xs text-warning">Configured model unavailable — answered by fallback model {aiStatus.servedBy}.</p>}
+      {(bad || aiStatus.phase === "untested") && aiStatus.configNotes?.map((n) => (
+        <p key={n} className="mt-1 text-xs text-warning">
+          Configuration: {n}
+        </p>
+      ))}
       {d && (bad || aiStatus.phase === "untested") && (
         <p className="mt-1 text-[11px] text-faint">
           Deployment: {d.environment}
+          {d.project ? ` · ${d.project}` : ""}
           {d.branch ? ` · ${d.branch}` : ""}
           {d.commit ? ` @ ${d.commit}` : ""}
           {aiStatus.model ? ` · model ${aiStatus.model}` : ""}
@@ -121,12 +133,12 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
         {m.kind === "results" ? "Physics engine" : "AutoDyn assistant"}
         {m.kind === "results" && <ProvenanceTag provenance="verified" title="Computed deterministically — not AI-generated" />}
       </div>
-      <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f0b2aa]" : "text-ink", m.kind === "results" && "num text-[13px]")}>
+      <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f5a8a8]" : "text-ink", m.kind === "results" && "num text-[13px]")}>
         <PlainText text={m.text} />
       </div>
       {m.followUp && m.followUp !== m.text && <p className="border-l-2 border-accent pl-3 text-[13.5px] leading-5 text-ink">{m.followUp}</p>}
       {m.notices?.map((n) => (
-        <p key={n} className="text-xs leading-4 text-caution">
+        <p key={n} className="text-xs leading-4 text-warning">
           {n}
         </p>
       ))}
@@ -194,7 +206,7 @@ function CurrentConfig() {
           </dl>
           {mod && (
             <div className="border-t border-line pt-2">
-              <div className="mb-1 text-xs font-medium text-accent">Modified scenario</div>
+              <div className="mb-1 text-xs font-medium text-modified">Modified scenario</div>
               {diff.length ? (
                 <ul className="space-y-1 text-xs text-muted">
                   {diff.map((k) => (
@@ -346,7 +358,7 @@ export default function AssistantWorkspace() {
             <span className="hidden sm:inline">
               <Kbd>Enter</Kbd> send · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line
             </span>
-            <span className={cx("num ml-auto", text.length > AI_LIMITS.maxMessageChars && "text-loss")}>
+            <span className={cx("num ml-auto", text.length > AI_LIMITS.maxMessageChars && "text-error")}>
               {text.length}/{AI_LIMITS.maxMessageChars}
             </span>
           </div>

@@ -20,6 +20,13 @@ export function useValidation() {
   return useMemo(() => validateConfig(state.config), [state.config]);
 }
 
+const CONSTRAINT_LABEL: Record<string, string> = {
+  claimedZeroTo60S: "Claimed 0–60 mph",
+  claimedTopSpeedMs: "Claimed top speed",
+  drivetrainTorqueLimitNm: "Drivetrain torque rating",
+  tireSpeedRatingMs: "Tire speed rating",
+};
+
 const isAdvanced = (i: Issue) => i.scenario === "conditions" || (!!i.key && !BASIC_KEYS.includes(i.key as SpecKey));
 
 function FixButton({ issue, fix }: { issue: Issue; fix: Fix }) {
@@ -31,13 +38,11 @@ function FixButton({ issue, fix }: { issue: Issue; fix: Fix }) {
       size="sm"
       variant="ghost"
       className="h-auto min-h-7 px-2 py-1 text-left text-xs whitespace-normal text-accent"
-      onClick={() =>
-        dispatch({
-          type: issue.scenario === "modified" ? "setModifiedValue" : "setStockValue",
-          key: fix.key,
-          value: { value: fix.value, provenance: "user", source: "User-confirmed adjustment", note: fix.label } as never,
-        })
-      }
+      onClick={() => {
+        const value = { value: fix.value, provenance: "user", source: "User-confirmed adjustment", note: fix.label } as never;
+        if (issue.scenario === "modified") dispatch({ type: "setModifiedValue", key: fix.key, value });
+        else dispatch({ type: "setStockValue", key: fix.key, value });
+      }}
     >
       {fix.label} ({display})
     </Button>
@@ -82,7 +87,12 @@ export function IssueList({ issues, actions = true }: { issues: Issue[]; actions
   const focusField = (i: Issue) => {
     if (isAdvanced(i) && !state.ui.advancedOpen) dispatch({ type: "setAdvancedOpen", open: true });
     if (i.scenario !== "conditions" && i.scenario !== state.ui.editing && state.config.modified) dispatch({ type: "setEditing", scenario: i.scenario });
-    const id = i.scenario === "conditions" ? ({ ambientTempC: "c-temp", elevationM: "c-elev", surface: "c-surface" } as Record<string, string>)[i.key ?? ""] : `f-${i.key}`;
+    const id =
+      i.scenario === "conditions"
+        ? ({ ambientTempC: "c-temp", elevationM: "c-elev", surface: "c-surface" } as Record<string, string>)[i.key ?? ""]
+        : CONSTRAINT_LABEL[i.key ?? ""]
+          ? `k-${i.key}`
+          : `f-${i.key}`;
     window.setTimeout(() => document.getElementById(id ?? "")?.focus(), 60);
   };
   return (
@@ -91,9 +101,9 @@ export function IssueList({ issues, actions = true }: { issues: Issue[]; actions
         const r = actions ? restore(i) : null;
         return (
           <li key={i.id} className="text-[12.5px] leading-5">
-            <span className={i.severity === "error" ? "text-loss" : "text-caution"}>
+            <span className={i.severity === "error" ? "text-error" : "text-warning"}>
               {i.scenario === "conditions" ? "Conditions" : i.scenario === "modified" ? "Modified" : "Stock"}
-              {i.key && i.scenario !== "conditions" ? ` · ${SPEC_LABEL[i.key as SpecKey] ?? i.key}` : ""}
+              {i.key && i.scenario !== "conditions" ? ` · ${SPEC_LABEL[i.key as SpecKey] ?? CONSTRAINT_LABEL[i.key] ?? i.key}` : ""}
               {isAdvanced(i) ? " (Advanced)" : ""}:
             </span>{" "}
             <span className="text-muted">{i.message}</span>
@@ -137,10 +147,10 @@ function RunPanel() {
     <div className="space-y-4 lg:sticky lg:top-[132px]">
       <Panel title="Run analysis" subtitle={state.config.modified ? "Stock vs. modified comparison" : "Stock scenario"}>
         <div className="space-y-3">
-          {errors.length === 0 && warnings.length === 0 && <p className="text-[13px] text-gain">Ready — all inputs are valid.</p>}
+          {errors.length === 0 && warnings.length === 0 && <p className="text-[13px] text-success">Ready — all inputs are valid.</p>}
           {errors.length > 0 && (
             <div className="space-y-2" role="alert">
-              <p className="text-[13px] font-medium text-loss">
+              <p className="text-[13px] font-medium text-error">
                 {errors.length} invalid value{errors.length > 1 ? "s" : ""} must be fixed
               </p>
               <IssueList issues={errors} />
@@ -148,12 +158,12 @@ function RunPanel() {
           )}
           {warnings.length > 0 && (
             <div className="space-y-2">
-              <p className="text-[13px] font-medium text-caution">
+              <p className="text-[13px] font-medium text-warning">
                 {warnings.length} unusual value{warnings.length > 1 ? "s" : ""} — allowed after you confirm
               </p>
               <IssueList issues={warnings} />
               {errors.length === 0 && (
-                <label className="flex items-start gap-2 rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-[12.5px] leading-5 text-[#e9cf98]">
+                <label className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-[12.5px] leading-5 text-[#f1d39e]">
                   <input
                     type="checkbox"
                     checked={acked}
@@ -179,12 +189,12 @@ function RunPanel() {
           <dl className="grid grid-cols-2 gap-3 text-[13px]">
             <div>
               <dt className="text-xs text-faint">Stock 0–60 mph</dt>
-              <dd className="num text-lg">{result.stock.metrics.zeroTo60S?.toFixed(2) ?? "—"} s</dd>
+              <dd className="num text-lg text-stock">{result.stock.metrics.zeroTo60S?.toFixed(2) ?? "—"} s</dd>
             </div>
             {result.modified && (
               <div>
                 <dt className="text-xs text-faint">Modified 0–60 mph</dt>
-                <dd className="num text-lg text-accent">{result.modified.metrics.zeroTo60S?.toFixed(2) ?? "—"} s</dd>
+                <dd className="num text-lg text-modified">{result.modified.metrics.zeroTo60S?.toFixed(2) ?? "—"} s</dd>
               </div>
             )}
           </dl>
@@ -212,7 +222,7 @@ function MobileRunBar() {
   return createPortal(
     <div className="no-print fixed inset-x-0 bottom-0 z-20 border-t border-line bg-bg/95 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur-[2px] lg:hidden" data-testid="mobile-run-bar">
       <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-3">
-        <span className={cx("min-w-0 text-xs leading-4", errors.length ? "text-loss" : warnings.length && !acked ? "text-caution" : "text-muted")}>
+        <span className={cx("min-w-0 text-xs leading-4", errors.length ? "text-error" : warnings.length && !acked ? "text-warning" : "text-muted")}>
           {errors.length
             ? `${errors.length} invalid value${errors.length > 1 ? "s" : ""} to fix`
             : warnings.length && !acked
@@ -262,7 +272,7 @@ export default function ManualSetup() {
           >
             Restored your previous session from this browser, including any values you edited.
             {state.restoredFixes.length > 0 && (
-              <span className="mt-1 block text-caution">
+              <span className="mt-1 block text-warning">
                 {state.restoredFixes.length} saved value{state.restoredFixes.length > 1 ? "s were" : " was"} physically invalid and reset to the source data:{" "}
                 {state.restoredFixes.join(", ")}.
               </span>

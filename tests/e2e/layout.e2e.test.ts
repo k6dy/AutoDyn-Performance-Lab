@@ -149,6 +149,12 @@ suite.each([360, 390])("production build at %ipx", (width) => {
       await shot(page, `${width}-results`, true);
       const charts = await page.locator("svg.recharts-surface").count();
       expect(charts).toBeGreaterThanOrEqual(5);
+      // Scenario colors and dash patterns on the actual rendered lines.
+      const lines = await page.$$eval("path.recharts-line-curve", (ps) => ps.map((p) => [p.getAttribute("stroke")?.toUpperCase(), p.getAttribute("stroke-dasharray")]));
+      expect(lines.some(([c, d]) => c === "#79A7FF" && (!d || d === "none" || /^0px/.test(d) === false))).toBe(true);
+      expect(lines.some(([c]) => c === "#E87942")).toBe(true);
+      await page.getByTestId("feasibility-modified").waitFor();
+      expect(await page.getByTestId("feasibility-modified").getAttribute("class")).toMatch(/border-questionable/);
 
       await page.getByRole("tab", { name: /Assistant/ }).click();
       await page.getByLabel("Message the AI Build Assistant").waitFor();

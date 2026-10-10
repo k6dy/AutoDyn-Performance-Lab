@@ -1,5 +1,6 @@
 import type {
   AnalysisConfig,
+  ScenarioConstraints,
   ScenarioId,
   SpecKey,
   SpecSet,
@@ -32,6 +33,16 @@ export function modifiedDiff(config: AnalysisConfig): SpecKey[] {
   if (!config.stock || !config.modified) return [];
   const mod = effectiveValues(config, "modified")!;
   return SPEC_KEYS.filter((k) => config.modified!.overrides[k] !== undefined && !sameValue(mod[k].value, config.stock!.values[k].value));
+}
+
+/** Constraints that apply to a scenario: Modified inherits Stock's unless it sets its own. */
+export function effectiveConstraints(config: AnalysisConfig, scenario: ScenarioId): ScenarioConstraints {
+  const stock = config.constraints?.stock ?? {};
+  if (scenario === "stock") return stock;
+  const mod = config.constraints?.modified ?? {};
+  const out: ScenarioConstraints = { ...stock };
+  for (const [k, v] of Object.entries(mod)) if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+  return out;
 }
 
 export function setStockValue<K extends SpecKey>(stock: SpecSet, key: K, value: SpecValues[K]): SpecSet {

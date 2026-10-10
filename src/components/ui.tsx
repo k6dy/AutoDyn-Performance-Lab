@@ -21,7 +21,7 @@ export function Button({ variant = "secondary", size = "md", className, ...props
         variant === "primary" && "bg-accent text-[#16110d] hover:bg-accent-strong",
         variant === "secondary" && "border border-line-strong bg-raised text-ink hover:border-faint hover:bg-hover",
         variant === "ghost" && "text-muted hover:bg-raised hover:text-ink",
-        variant === "danger" && "border border-loss/40 text-loss hover:bg-loss/10",
+        variant === "danger" && "border border-error/40 text-error hover:bg-error/10",
         className,
       )}
     />
@@ -100,6 +100,17 @@ export function ProvenanceTag({ provenance, title, compact, label }: { provenanc
   );
 }
 
+/** Scenario identity: color plus shape plus text, so it never relies on color alone. */
+export function ScenarioTag({ scenario, label }: { scenario: "stock" | "modified"; label?: string }) {
+  const stock = scenario === "stock";
+  return (
+    <span data-scenario={scenario} className={cx("inline-flex items-center gap-1.5 font-medium", stock ? "text-stock" : "text-modified")}>
+      <span aria-hidden className={cx("inline-block h-2 w-2 shrink-0", stock ? "rounded-full bg-stock" : "rotate-45 bg-modified")} />
+      {label ?? (stock ? "Stock" : "Modified")}
+    </span>
+  );
+}
+
 export function Spinner({ label }: { label?: string }) {
   return (
     <span className="inline-flex items-center gap-1" role="status" aria-label={label ?? "Loading"}>
@@ -117,9 +128,9 @@ export function Notice({ tone = "info", children, action }: { tone?: "info" | "w
       className={cx(
         "flex flex-wrap items-start justify-between gap-3 rounded-md border px-3 py-2.5 text-[13px] leading-5",
         tone === "info" && "border-line bg-raised text-muted",
-        tone === "warning" && "border-caution/35 bg-caution/8 text-[#e9cf98]",
-        tone === "error" && "border-loss/40 bg-loss/8 text-[#f0b2aa]",
-        tone === "success" && "border-gain/35 bg-gain/8 text-[#bfe0c7]",
+        tone === "warning" && "border-warning/35 bg-warning/8 text-[#f1d39e]",
+        tone === "error" && "border-error/40 bg-error/8 text-[#f5a8a8]",
+        tone === "success" && "border-success/35 bg-success/8 text-[#a9e3cd]",
       )}
     >
       <div className="min-w-0 flex-1">{children}</div>

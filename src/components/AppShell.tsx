@@ -29,7 +29,7 @@ function ResultStatus() {
   const { state, stale, running } = useApp();
   if (running) return <span className="text-[11px] text-accent">Running…</span>;
   if (!state.result) return <span className="text-[11px] text-faint">Not run</span>;
-  return stale ? <span className="text-[11px] text-caution">Out of date</span> : <span className="text-[11px] text-gain">Up to date</span>;
+  return stale ? <span className="text-[11px] text-warning">Out of date</span> : <span className="text-[11px] text-success">Up to date</span>;
 }
 
 function VehicleStrip() {
@@ -54,12 +54,12 @@ function VehicleStrip() {
         <span className="hidden h-4 w-px bg-line sm:block" />
         <span className="text-faint">Scenarios</span>
         <span className="text-muted">
-          Stock{state.config.modified ? <> · <span className="text-accent">Modified</span> ({changes} change{changes === 1 ? "" : "s"})</> : null}
+          <span className="text-stock">Stock</span>{state.config.modified ? <> · <span className="text-modified">Modified</span> ({changes} change{changes === 1 ? "" : "s"})</> : null}
         </span>
         {state.result && stale && (
           <>
             <span className="hidden h-4 w-px bg-line sm:block" />
-            <span className="text-caution">Inputs changed since the last analysis</span>
+            <span className="text-warning">Inputs changed since the last analysis</span>
           </>
         )}
       </div>

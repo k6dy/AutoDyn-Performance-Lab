@@ -16,7 +16,12 @@ describe("provider error classification", () => {
   it("distinguishes key, model, quota, server, format, network and timeout failures", () => {
     const invalid = JSON.stringify({ error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT", details: [{ reason: "API_KEY_INVALID" }] } });
     expect(classifyProviderError(apiError(400, invalid), false, KEY).code).toBe("invalid_key");
-    expect(classifyProviderError(apiError(403, "PERMISSION_DENIED"), false, KEY).code).toBe("invalid_key");
+    expect(classifyProviderError(apiError(403, "PERMISSION_DENIED"), false, KEY).code).toBe("key_restricted");
+    expect(classifyProviderError(apiError(403, JSON.stringify({ error: { details: [{ reason: "API_KEY_SERVICE_BLOCKED" }] } })), false, KEY).code).toBe("key_restricted");
+    expect(classifyProviderError(apiError(400, "models/gemini-x is not supported for generateContent"), false, KEY).code).toBe("model_unsupported");
+    expect(classifyProviderError(apiError(429, "Quota exceeded for metric: GenerateRequestsPerMinutePerProjectPerModel"), false, KEY).code).toBe("provider_rate_limited");
+    expect(classifyProviderError(apiError(429, "Quota exceeded for metric: GenerateRequestsPerDayPerProjectPerModel-FreeTier"), false, KEY).code).toBe("quota");
+    expect(classifyProviderError(new RangeError("bug"), false, KEY).code).toBe("internal_error");
     expect(classifyProviderError(apiError(404, "models/gemini-x is not found for API version v1beta"), false, KEY).code).toBe("model_unavailable");
     expect(classifyProviderError(apiError(429, "RESOURCE_EXHAUSTED"), false, KEY).code).toBe("quota");
     expect(classifyProviderError(apiError(503, "UNAVAILABLE"), false, KEY).code).toBe("server_error");

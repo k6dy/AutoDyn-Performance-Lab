@@ -4,11 +4,11 @@
 import type { ModelOutput } from "@/lib/ai/schema";
 import type { AiField, AiUnit, ProposedChange } from "@/lib/ai/types";
 import { AI_LIMITS } from "@/lib/ai/types";
-import type { Conditions, SpecKey } from "@/lib/domain/types";
-import { ftToM, fToC, hpToKw, lbToKg, lbftToNm, M2_PER_FT2, psToKw } from "@/lib/units";
+import type { Conditions, ConstraintKey, SpecKey } from "@/lib/domain/types";
+import { ftToM, fToC, hpToKw, kphToMs, lbToKg, lbftToNm, M2_PER_FT2, mphToMs, psToKw } from "@/lib/units";
 
 type FieldMap = {
-  key: SpecKey | keyof Conditions;
+  key: SpecKey | keyof Conditions | ConstraintKey;
   target?: "conditions";
   units: Partial<Record<AiUnit, (v: number) => number>>;
   /** Unit converter for deltas (differs from absolute only for temperature). */
@@ -39,10 +39,12 @@ const FIELD_MAP: Record<AiField, FieldMap> = {
   },
   elevation: { key: "elevationM", target: "conditions", units: { m: id, ft: ftToM }, label: "Elevation" },
   surface: { key: "surface", target: "conditions", units: {}, options: ["dry", "wet", "prepped", "gravel", "snow"], label: "Road surface" },
+  claimedZeroTo60: { key: "claimedZeroTo60S", units: { seconds: id }, label: "Claimed 0–60 mph" },
+  claimedTopSpeed: { key: "claimedTopSpeedMs", units: { mph: mphToMs, kmh: kphToMs }, label: "Claimed top speed" },
 };
 
 const UNIT_TEXT: Partial<Record<AiUnit, string>> = {
-  hp: "hp", kw: "kW", ps: "PS", lbft: "lb·ft", nm: "N·m", lb: "lb", kg: "kg", percent: "%", seconds: "s", rpm: "rpm", c: "°C", f: "°F", m: "m", ft: "ft", m2: "m²", ft2: "ft²",
+  mph: "mph", kmh: "km/h", hp: "hp", kw: "kW", ps: "PS", lbft: "lb·ft", nm: "N·m", lb: "lb", kg: "kg", percent: "%", seconds: "s", rpm: "rpm", c: "°C", f: "°F", m: "m", ft: "ft", m2: "m²", ft2: "ft²",
 };
 
 const OPTION_WORDS: Record<string, RegExp> = {

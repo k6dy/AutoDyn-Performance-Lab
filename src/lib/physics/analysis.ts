@@ -2,7 +2,9 @@
 // Nothing here calls an AI model; both Manual Setup and the AI Build Assistant end up here.
 
 import { QUALITY_WEIGHTS } from "@/lib/domain/fields";
-import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
+import { effectiveConstraints, effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
+import { assessScenario } from "@/lib/feasibility/assess";
+import type { FeasibilityAssessment } from "@/lib/feasibility/types";
 import type {
   AnalysisConfig,
   Conditions,
@@ -72,6 +74,8 @@ export type AnalysisResult = {
   modified: ScenarioResult | null;
   /** Effect of each changed parameter group applied to stock alone (only when modified exists). */
   attribution: AttributionItem[] | null;
+  /** Deterministic engineering feasibility for each scenario (independent of any AI). */
+  feasibility: { stock: FeasibilityAssessment; modified: FeasibilityAssessment | null };
 };
 
 const GROUPS: { group: string; label: string; keys: SpecKey[] }[] = [
@@ -259,5 +263,19 @@ export function runAnalysis(config: AnalysisConfig, now = new Date()): AnalysisR
     stock,
     modified,
     attribution: modified ? attribute(config, modifiedDiff(config)) : null,
+    feasibility: {
+      stock: assessScenario({ scenario: "stock", values: stockValues, identity, constraints: effectiveConstraints(config, "stock"), rollout: config.conditions.rollout, result: stock }),
+      modified: modified
+        ? assessScenario({
+            scenario: "modified",
+            values: effectiveValues(config, "modified")!,
+            identity,
+            constraints: effectiveConstraints(config, "modified"),
+            rollout: config.conditions.rollout,
+            result: modified,
+            stock,
+          })
+        : null,
+    },
   };
 }

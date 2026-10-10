@@ -20,12 +20,24 @@ export type AiStatus = {
   model: string | null;
   deployment: DeploymentInfo | null;
   checkedAt: string | null;
+  /** Sanitized provider diagnostics for the last failure (no secrets). */
+  detail?: string | null;
+  servedBy?: string | null;
+  configNotes?: string[];
 };
 
-const PROVIDER_CODES: ProviderCode[] = ["not_configured", "invalid_key", "model_unavailable", "quota", "timeout", "network", "server_error", "request_rejected", "invalid_output"];
+const PROVIDER_CODES: ProviderCode[] = ["not_configured", "invalid_key", "key_restricted", "model_unavailable", "model_unsupported", "quota", "provider_rate_limited", "timeout", "network", "server_error", "request_rejected", "invalid_output", "internal_error"];
 
 function statusFrom(s: AssistantStatus): AiStatus {
-  const base = { model: s.model, deployment: s.deployment, checkedAt: s.provider?.checkedAt ?? null };
+  const p = s.provider;
+  const base = {
+    model: s.model,
+    deployment: s.deployment,
+    checkedAt: p?.checkedAt ?? null,
+    detail: p && p.status !== "ok" && (p.httpStatus || p.reason) ? [p.httpStatus ? `HTTP ${p.httpStatus}` : null, p.reason].filter(Boolean).join(" · ") : null,
+    servedBy: p?.servedBy && p.servedBy !== s.model ? p.servedBy : null,
+    configNotes: s.configNotes ?? [],
+  };
   if (!s.configured) return { ...base, phase: "unavailable", code: "not_configured" };
   if (!s.provider) return { ...base, phase: "untested", code: null };
   if (s.provider.status === "ok") return { ...base, phase: "ready", code: null };

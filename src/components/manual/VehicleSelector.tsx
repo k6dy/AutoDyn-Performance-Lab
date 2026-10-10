@@ -434,7 +434,7 @@ export default function VehicleSelector() {
               <span className="font-medium text-ink">{vehicleLabel(current.identity)}</span>
               <ProvenanceTag provenance={current.identity.source === "dataset" ? "verified" : current.identity.source === "custom" ? "user" : "unavailable"} title={current.identity.sourceDetail} />
             </div>
-            <div className={cx("text-xs", current.identity.source === "dataset" ? "text-muted" : "text-caution")}>
+            <div className={cx("text-xs", current.identity.source === "dataset" ? "text-muted" : "text-warning")}>
               {current.identity.source === "dataset"
                 ? current.identity.sourceDetail
                 : current.identity.source === "custom"
@@ -442,7 +442,7 @@ export default function VehicleSelector() {
                   : "Identified only — no verified performance specifications"}
             </div>
             {current.identity.notes.map((n) => (
-              <p key={n} className="mt-1 text-xs text-caution">
+              <p key={n} className="mt-1 text-xs text-warning">
                 {n}
               </p>
             ))}

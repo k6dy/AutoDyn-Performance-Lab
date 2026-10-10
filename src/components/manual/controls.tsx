@@ -81,7 +81,7 @@ export function CommitInput({
           (e.target as HTMLInputElement).blur();
         }
       }}
-      className={cx(inputClass, invalid ? "border-loss/70" : "border-line", className)}
+      className={cx(inputClass, invalid ? "border-error/70" : "border-line", className)}
     />
   );
 }
@@ -129,9 +129,9 @@ export function Row({ label, htmlFor, provenance, provenanceTitle, unit, hint, h
         )}
       </div>
       <div id={hintId} className="mt-1 space-y-0.5 text-[12px] leading-4">
-        {compare && <div className="text-accent">{compare}</div>}
+        {compare && <div className="text-stock">{compare}</div>}
         {issue && (
-          <div className={issue.severity === "error" ? "text-loss" : "text-caution"}>
+          <div className={issue.severity === "error" ? "text-error" : "text-warning"}>
             {issue.severity === "error" ? "Invalid: " : "Unusual: "}
             {issue.message}
             {onReset && issue.severity === "error" && (
@@ -169,7 +169,8 @@ export function useFieldBinding(scenario: ScenarioId) {
       source: value == null ? undefined : scenario === "modified" ? "User-provided assumption" : "User input",
       note,
     } as SpecValues[SpecKey];
-    dispatch({ type: scenario === "stock" ? "setStockValue" : "setModifiedValue", key, value: v });
+    if (scenario === "stock") dispatch({ type: "setStockValue", key, value: v });
+    else dispatch({ type: "setModifiedValue", key, value: v });
   };
 
   const resetInfo = (key: SpecKey): { onReset?: () => void; resetLabel?: string } => {

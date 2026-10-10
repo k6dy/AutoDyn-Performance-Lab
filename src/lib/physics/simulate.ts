@@ -48,7 +48,7 @@ type Options = { dt?: number; sampleEvery?: number; collectSamples?: boolean; ro
 const STALL_TORQUE_RATIO = 2.0;
 const COUPLING_SPEED_RATIO = 0.85;
 
-function inertiaFactor(inp: ResolvedInputs, overall: number) {
+export function inertiaFactor(inp: ResolvedInputs, overall: number) {
   const k = inp.powertrain === "ev" ? 0.0008 : 0.0015;
   return 1.04 + k * overall * overall;
 }
@@ -64,7 +64,7 @@ function overallRatio(inp: ResolvedInputs, gearIdx: number, v: number) {
 }
 
 /** Untractioned wheel force in a gear at speed v, plus the engine speed and power used. */
-function engineForce(inp: ResolvedInputs, gearIdx: number, v: number) {
+export function engineForce(inp: ResolvedInputs, gearIdx: number, v: number) {
   const overall = overallRatio(inp, gearIdx, v);
   const wheelOmega = v / inp.tireRadiusM;
   const coupledRpm = radSToRpm(wheelOmega * overall);
@@ -86,7 +86,7 @@ function engineForce(inp: ResolvedInputs, gearIdx: number, v: number) {
   return { force, rpm, overall, overRev: false, slipping };
 }
 
-function tractionLimit(inp: ResolvedInputs, resist: number) {
+export function tractionLimit(inp: ResolvedInputs, resist: number) {
   const mu = inp.tireMu * inp.surfaceFactor;
   const weight = inp.massKg * G;
   const hl = inp.cgHeightRatio;
@@ -100,7 +100,7 @@ function tractionLimit(inp: ResolvedInputs, resist: number) {
   }
 }
 
-function resistance(inp: ResolvedInputs, v: number) {
+export function resistance(inp: ResolvedInputs, v: number) {
   return 0.5 * inp.airDensity * inp.dragCoefficient * inp.frontalAreaM2 * v * v + inp.rollingResistance * inp.massKg * G;
 }
 

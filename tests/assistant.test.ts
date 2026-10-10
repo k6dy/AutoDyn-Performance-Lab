@@ -148,7 +148,7 @@ describe("assistant request pipeline", () => {
     const thrown = vi.fn(async () => {
       throw new Error("unexpected");
     });
-    expect((await handleAssistantRequest(request("hi"), deps(thrown))).body).toMatchObject({ ok: false, code: "server_error" });
+    expect((await handleAssistantRequest(request("hi"), deps(thrown))).body).toMatchObject({ ok: false, code: "internal_error" });
     for (const code of ["invalid_key", "model_unavailable", "request_rejected"] as const) {
       const r = await handleAssistantRequest(request("hi"), deps(vi.fn(async () => ({ ok: false as const, code }))));
       expect(r.body).toMatchObject({ ok: false, code });

@@ -3,6 +3,7 @@
 import { ChevronDown } from "lucide-react";
 import type { ReactNode } from "react";
 import { CommitInput, NumericField, Row, SelectField, useFieldBinding, inputClass } from "@/components/manual/controls";
+import ConstraintFields from "@/components/manual/ConstraintFields";
 import { cx, Segmented } from "@/components/ui";
 import { ASPIRATION_OPTIONS, POWERTRAIN_OPTIONS, SURFACE_OPTIONS, TRANSMISSION_OPTIONS } from "@/lib/domain/fields";
 import { sameValue } from "@/lib/domain/scenario";
@@ -105,6 +106,10 @@ function ScenarioFields({ issues }: { issues: Issue[] }) {
         <NumericField b={b} k="drivetrainEfficiency" issue={issueFor("drivetrainEfficiency")} />
       </Group>
 
+      <Group title="Claims & component limits (optional)" note="Used only by the feasibility assessment, never by the physics.">
+        <ConstraintFields issues={issues} />
+      </Group>
+
       <Group title="Tires & traction">
         <NumericField b={b} k="tireMu" issue={issueFor("tireMu")} />
         <NumericField b={b} k="tireRadiusM" issue={issueFor("tireRadiusM")} />
@@ -184,7 +189,7 @@ export default function AdvancedSettings({ issues, assumptions }: { issues: Issu
   const advancedErrors = issues.filter((i) => i.severity === "error" && (i.scenario === "conditions" || (i.key && !BASIC_KEYS.includes(i.key as SpecKey)))).length;
 
   return (
-    <section className={cx("rounded-lg border bg-surface", advancedErrors ? "border-loss/50" : "border-line")} id="advanced-settings">
+    <section className={cx("rounded-lg border bg-surface", advancedErrors ? "border-error/50" : "border-line")} id="advanced-settings">
       <button
         type="button"
         aria-expanded={open}
@@ -217,7 +222,7 @@ export default function AdvancedSettings({ issues, assumptions }: { issues: Issu
               ]}
             />
           </div>
-          {state.ui.editing === "modified" && <p className="px-4 pt-2 text-xs text-accent sm:px-5">Editing the Modified scenario — Stock values are not changed.</p>}
+          {state.ui.editing === "modified" && <p className="px-4 pt-2 text-xs text-modified sm:px-5">Editing the Modified scenario — Stock values are not changed.</p>}
           <div key={state.ui.editing} className="animate-fade">
             <ScenarioFields issues={issues} />
           </div>

@@ -36,9 +36,13 @@ See `.env.example`. All are optional — without them the app is fully functiona
 | `AI_RATE_LIMIT_PER_MINUTE`, `AI_RATE_LIMIT_PER_DAY`, `AI_GLOBAL_DAILY_LIMIT` | Defaults 5 / 40 per client, 300 global per day. |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Optional persistent rate limiting across serverless instances. |
 
+### Engineering feasibility
+
+`src/lib/feasibility` classifies each scenario as **Feasible**, **Questionable**, **Non-feasible** or **Insufficient data** from deterministic checks (data provenance, power/torque consistency, specific output, traction bound vs. drive force, grip level, drag area, speed range, acceleration envelope, optional claims and component ratings, model validity range). Non-feasible always names the violated bound (e.g. a claimed 0–60 below the traction-limited minimum, a claimed top speed above the power-limited maximum, torque above a stated driveline rating). Invalid inputs are input errors, never a feasibility status. No AI is involved; the assistant only explains the result.
+
 ### Checking the AI connection
 
-`GET /api/assistant/health?probe=1` makes one real, bounded Gemini request in the production request format and reports `configured`, `model`, the deployment's `environment / branch / commit`, and `provider.status`: `ok`, `not_configured`, `invalid_key`, `model_unavailable`, `quota`, `timeout`, `network`, `server_error`, `request_rejected` or `invalid_output`. The key is never returned; sanitized details are logged server-side as `[assistant] provider_error {...}`. The assistant runs this check automatically once per browser session (also via **Test connection**).
+`GET /api/assistant/health?probe=1` (same-origin, rate-limited and cached; or with `Authorization: Bearer $AI_DIAGNOSTICS_TOKEN` to force it and add `&models=1` to list the Flash-Lite models the project can see) makes one real, bounded Gemini request in the production request format and reports `configured`, `model`, the deployment's `environment / branch / commit`, and `provider.status`: `ok`, `not_configured`, `invalid_key`, `model_unavailable`, `quota`, `timeout`, `network`, `server_error`, `request_rejected` or `invalid_output`. The key is never returned; sanitized details are logged server-side as `[assistant] provider_error {...}`. The assistant runs this check automatically once per browser session (also via **Test connection**).
 
 Vercel applies environment-variable changes only to **new** deployments: after adding `GEMINI_API_KEY`, redeploy the latest `autodyn-v2` deployment (not `main`).
 

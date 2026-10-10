@@ -55,8 +55,18 @@ export const conditionsSchema = z.object({
   rollout: z.boolean(),
 });
 
+const scenarioConstraintsSchema = z
+  .object({
+    claimedZeroTo60S: z.number().nullable().optional(),
+    claimedTopSpeedMs: z.number().nullable().optional(),
+    drivetrainTorqueLimitNm: z.number().nullable().optional(),
+    tireSpeedRatingMs: z.number().nullable().optional(),
+  })
+  .strict();
+
 export const configSchema = z.object({
   stock: specSetSchema.nullable(),
   modified: z.object({ overrides: z.object(valuesShape).partial().strict() }).nullable(),
   conditions: conditionsSchema,
+  constraints: z.object({ stock: scenarioConstraintsSchema.optional(), modified: scenarioConstraintsSchema.optional() }).strict().optional(),
 });

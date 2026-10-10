@@ -13,14 +13,23 @@
   --color-accent-soft: rgb(212 106 44 / 0.14);
   --color-line: #32363a;
   --color-line-strong: #454a50;
-  --color-stock: #8fa7bd;
-  --color-gain: #7cb38a;
-  --color-loss: #e0776b;
-  --color-caution: #d6a84a;
-  --color-verified: #7cb38a;
-  --color-user: #8fa7bd;
-  --color-estimated: #d6a84a;
-  --color-unavailable: #7d8288;
+  /* Scenario identity (see src/lib/theme.ts) */
+  --color-stock: #79a7ff;
+  --color-modified: #e87942;
+  /* Validation */
+  --color-error: #ef6464;
+  --color-warning: #e9b35b;
+  --color-success: #50c49a;
+  /* Engineering feasibility */
+  --color-feasible: #50c49a;
+  --color-questionable: #e9b35b;
+  --color-nonfeasible: #e45b70;
+  --color-insufficient: #9299a3;
+  /* Data provenance (always shown with a text label) */
+  --color-verified: #50c49a;
+  --color-user: #c9ced6;
+  --color-estimated: #c2ab86;
+  --color-unavailable: #9299a3;
 
   --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, "SFMono-Regular", monospace;
