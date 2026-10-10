@@ -1,12 +1,13 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { CommitInput, formatDisplay, inputClass, NumericField, Row, SelectField, useFieldBinding } from "@/components/manual/controls";
 import { BASIC_KEYS } from "@/components/manual/AdvancedSettings";
 import WeightField from "@/components/manual/WeightField";
 import { Button, cx, Notice, Panel, ProvenanceTag, Segmented } from "@/components/ui";
 import { DRIVETRAIN_OPTIONS, NUMERIC_FIELDS, SURFACE_OPTIONS, TRANSMISSION_OPTIONS } from "@/lib/domain/fields";
+import { MODEL_SOURCE, relatedValues } from "@/lib/domain/powerTorque";
 import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
 import { DEFAULT_CONDITIONS, type NumericSpecKey } from "@/lib/domain/types";
 import type { Issue } from "@/lib/domain/validation";
@@ -135,6 +136,48 @@ function DeltaField({ k, label, chips }: { k: NumericSpecKey; label: string; chi
   );
 }
 
+/**
+ * "Adjust related values": when Modified changes power or torque alone, offers the same documented
+ * proportional-curve model the AI Build Assistant uses. Nothing changes until the user confirms.
+ */
+function RelatedValues() {
+  const { state, dispatch } = useApp();
+  const stock = state.config.stock!;
+  const units = state.ui.units;
+  const suggestion = useMemo(() => {
+    const mod = effectiveValues(state.config, "modified");
+    return mod ? relatedValues(stock.values, mod, stock.identity) : null;
+  }, [state.config, stock]);
+  if (!suggestion) return null;
+  const fmt = (key: NumericSpecKey, v: number | null) => (v == null ? "auto" : `${formatDisplay(NUMERIC_FIELDS[key], v, units)} ${unitLabel(NUMERIC_FIELDS[key].quantity, units)}`);
+  const apply = () => {
+    for (const d of suggestion.derived) {
+      const value = NUMERIC_FIELDS[d.key].integer ? Math.round(d.to) : d.to;
+      dispatch({ type: "setModifiedValue", key: d.key, value: { value, provenance: "estimated", source: MODEL_SOURCE, note: d.reason } });
+    }
+    for (const k of suggestion.reset) dispatch({ type: "resetField", scenario: "modified", key: k });
+  };
+  return (
+    <Notice
+      action={
+        <Button size="sm" onClick={apply}>
+          Adjust related values
+        </Button>
+      }
+    >
+      {suggestion.derived.length > 0 ? (
+        <>
+          <span className="text-ink">{suggestion.model.assumption}</span>{" "}
+          {suggestion.derived.map((d) => `${NUMERIC_FIELDS[d.key].label}: ${fmt(d.key, d.from)} → ${fmt(d.key, d.to)}`).join(" · ")}{" "}
+          <ProvenanceTag provenance="estimated" />
+        </>
+      ) : (
+        <>Modeled values from an earlier adjustment no longer match your changes. Adjusting returns them to stock.</>
+      )}
+    </Notice>
+  );
+}
+
 const TIRE_PRESETS = [
   { id: "stock", label: "Same as stock", mu: null },
   { id: "summer", label: "Performance summer tires (assumed grip 1.10)", mu: 1.1 },
@@ -241,6 +284,7 @@ export function ScenarioSetup() {
               </select>
             </Row>
           </div>
+          <RelatedValues />
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-xs text-muted">
             <span>
               {changes.length ? `${changes.length} change${changes.length > 1 ? "s" : ""} from stock` : "No changes yet — modified matches stock."}

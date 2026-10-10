@@ -56,8 +56,9 @@ describe("the reported multipart C300 request", () => {
       expect(kwToHp(body.proposal.vehicle.specSet.values.peakPowerKw.value!)).toBeCloseTo(241, 0); // dataset value, not invented
     }
     expect(body.proposal?.changes[0]).toMatchObject({ target: "modified", display: "+60 hp", statedByUser: true });
-    // +60 hp alone fails AutoDyn's deterministic power/torque check, so the next step says so (Apply stays blocked).
-    expect(body.reply).toMatch(/\*\*Simulation status:\*\* No — nothing has been simulated yet\. AutoDyn's input validation blocks these values — .*torque.*Adjust them in the proposal below/);
+    // +60 hp alone gets a deterministic, estimated torque curve, so the proposal is valid and Apply is the next step.
+    expect(body.reply).toMatch(/\*\*Simulation status:\*\* No — nothing has been simulated yet\. Review the proposed changes below and select Apply to Simulation to run the physics engine\. AutoDyn added an estimated torque curve/);
+    expect(body.reply).not.toMatch(/validation blocks|requires more torque/);
     // Every intent reaches Gemini as a separate part, with AutoDyn's authoritative status.
     expect(turn).toMatch(/1\. Analyze a stock 2015 Mercedes-Benz C300 4MATIC[\s\S]*2\. Propose a modified version with 60 additional horsepower\.[\s\S]*3\. Explain what will change[\s\S]*4\. Whether the simulation has actually run yet/);
     expect(turn).toMatch(/APP STATE \(authoritative[^)]*\): No — nothing has been simulated yet\./);
@@ -90,7 +91,8 @@ describe("the reported multipart C300 request", () => {
     out.changes.push({ scenario: "modified", field: "torque", operation: "change", value: 60, unit: "lbft", option: "", reason: "60 lb-ft more torque" });
     const { body } = await send(valid, out);
     const proposal = body.proposal!;
-    expect(body.reply).toMatch(/\*\*Simulation status:\*\* No — nothing has been simulated yet\. review the proposed changes below and select Apply to Simulation/);
+    expect(body.reply).toMatch(/\*\*Simulation status:\*\* No — nothing has been simulated yet\. Review the proposed changes below and select Apply to Simulation/);
+    expect(body.reply).not.toMatch(/estimated torque curve/); // both values stated: nothing is modeled
     const empty = { ...config(), stock: null };
     // Nothing changes until the user approves.
     expect(empty.stock).toBeNull();

@@ -58,7 +58,11 @@ describe("input validation", () => {
     const s = c300();
     const modified = { ...s.values, peakPowerKw: user(hpToKw(340)) };
     const issues = validateValues(modified, "modified", s.identity, s.values).filter((i) => i.severity === "error");
-    expect(issues[0].fixes?.[0].label).toMatch(/Scale torque/);
+    const fix = issues[0].fixes![0];
+    expect(fix.label).toMatch(/Adjust related values/);
+    // Same proportional-curve model as the AI pipeline: torque scales by the power ratio, labeled as an estimate.
+    expect(fix).toMatchObject({ key: "peakTorqueNm", provenance: "estimated" });
+    expect(fix.value).toBeCloseTo(lbftToNm(273) * (340 / 241), 6);
   });
 
   it("warns (not rejects) for unusual but possible values", () => {

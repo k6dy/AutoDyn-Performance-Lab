@@ -10,6 +10,7 @@ import { Button, cx, Notice, Panel, Spinner } from "@/components/ui";
 import { NewAnalysisButton, RestoredFixes } from "@/components/Workspace";
 import { isHistorical } from "@/lib/persistence/snapshot";
 import { NUMERIC_FIELDS, SPEC_LABEL } from "@/lib/domain/fields";
+import { MODEL_SOURCE } from "@/lib/domain/powerTorque";
 import { effectiveValues, sameValue } from "@/lib/domain/scenario";
 import { DEFAULT_CONDITIONS, type Conditions, type NumericSpecKey, type SpecKey } from "@/lib/domain/types";
 import { validateConfig, type Fix, type Issue } from "@/lib/domain/validation";
@@ -41,7 +42,11 @@ function FixButton({ issue, fix }: { issue: Issue; fix: Fix }) {
       variant="ghost"
       className="h-auto min-h-7 px-2 py-1 text-left text-xs whitespace-normal text-accent"
       onClick={() => {
-        const value = { value: fix.value, provenance: "user", source: "User-confirmed adjustment", note: fix.label } as never;
+        const value = (
+          fix.provenance === "estimated"
+            ? { value: fix.value, provenance: "estimated", source: MODEL_SOURCE, note: fix.note ?? fix.label }
+            : { value: fix.value, provenance: "user", source: "User-confirmed adjustment", note: fix.label }
+        ) as never;
         if (issue.scenario === "modified") dispatch({ type: "setModifiedValue", key: fix.key, value });
         else dispatch({ type: "setStockValue", key: fix.key, value });
       }}

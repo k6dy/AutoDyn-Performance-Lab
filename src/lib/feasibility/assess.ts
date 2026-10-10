@@ -3,6 +3,7 @@
 // constraint, the quantities involved and the assumption it depends on.
 
 import { SPEC_LABEL } from "@/lib/domain/fields";
+import { MODEL_SOURCE } from "@/lib/domain/powerTorque";
 import { effectiveConstraints, effectiveValues } from "@/lib/domain/scenario";
 import type { AnalysisConfig, Provenance, ScenarioConstraints, ScenarioId, SpecKey, SpecValues, VehicleIdentity } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
@@ -107,14 +108,28 @@ export function assessScenario(a: AssessInput): FeasibilityAssessment {
     add({ id: "data.mass", category: "data", label: "Vehicle weight source", outcome: "pass", detail: `Curb weight is ${p("curbMassKg") === "verified" ? "a published specification" : "user-provided"}.`, values: [{ label: "Curb weight", value: f.mass(inp.curbMassKg) }] });
   }
   if (p("peakTorqueNm") === "estimated") {
+    const modeled = values.peakTorqueNm.source === MODEL_SOURCE;
     add({
       id: "data.torque",
       category: "data",
       label: "Torque source",
       outcome: "caution",
-      detail: "Peak torque was estimated from power, so the low- and mid-rpm thrust that dominates launch is uncertain.",
+      detail: modeled
+        ? "Peak torque is a modeling assumption (the torque curve was scaled to match the requested power), not a measured figure, so the low- and mid-rpm thrust that dominates launch is hypothetical."
+        : "Peak torque was estimated from power, so the low- and mid-rpm thrust that dominates launch is uncertain.",
       values: [{ label: "Peak torque (estimated)", value: f.torque(inp.curve.peakTorqueNm) }],
-      suggestion: "Provide the rated peak torque.",
+      suggestion: modeled ? "Enter a measured (dyno) torque figure if you have one." : "Provide the rated peak torque.",
+    });
+  }
+  if (p("peakPowerKw") === "estimated") {
+    add({
+      id: "data.power",
+      category: "data",
+      label: "Power source",
+      outcome: "caution",
+      detail: "Peak power is a modeling assumption (the curve was scaled with the requested torque), not a measured figure.",
+      values: [{ label: "Peak power (estimated)", value: f.power(inp.curve.peakPowerW) }],
+      suggestion: "Enter a measured (dyno) power figure if you have one.",
     });
   }
   if (p("drivetrain") === "estimated") {

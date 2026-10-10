@@ -82,6 +82,44 @@ export function stripUnmodeledClaims(reply: string) {
   return filterSentences(reply, (s) => SIM_SUBJECT.test(s) && SIM_VERB.test(s) && UNMODELED.test(s) && !NEGATED.test(s));
 }
 
+const STATUS_SUBJECT = /\b(?:simulat\w*|physics engine|analysis|results?|proposal)\b/i;
+const STATUS_PENDING =
+  /\b(?:not (?:yet )?(?:been )?(?:run|simulated|started|performed|executed|applied|calculated)|(?:hasn't|has not|haven't|have not|isn't|is not)(?: yet)?(?: been)? (?:run|started|simulated|performed|executed|applied|calculated)|not (?:run )?yet|until (?:you|the proposal|it is|it's)|(?:once|after|when) you (?:approve|apply|click|select|confirm|press)|pending (?:your )?(?:approval|review)|awaiting (?:your )?(?:approval|review)|(?:needs|requires) your (?:approval|review))\b|\bApply to Simulation\b/i;
+
+/**
+ * Removes the model's own statements about whether the simulation has run or what to click next.
+ * AutoDyn reports that status itself from the real application state, exactly once.
+ */
+export function stripStatusClaims(reply: string) {
+  return filterSentences(reply, (s) => /\bnothing has been simulated\b/i.test(s) || (STATUS_SUBJECT.test(s) && STATUS_PENDING.test(s)));
+}
+
+const HEADING = /^\s*(#{1,6})\s+\S|^\s*\*\*[^*\n]{1,80}\*\*:?\s*$|^\s*__[^_\n]{1,80}__:?\s*$/;
+const headingLevel = (line: string) => /^\s*(#{1,6})\s/.exec(line)?.[1].length ?? 7; // bold-only label lines rank lowest
+
+/**
+ * Drops headings (and bold-only label lines) left without content, e.g. "### Expected Changes" whose
+ * sentences a guard removed. A heading followed only by another heading of the same or higher rank,
+ * or by the end of the reply, is empty.
+ */
+export function dropEmptySections(text: string) {
+  let lines = text.split("\n");
+  for (let pass = 0; pass < 6; pass++) {
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (HEADING.test(lines[i])) {
+        let j = i + 1;
+        while (j < lines.length && !lines[j].trim()) j++;
+        if (j >= lines.length || (HEADING.test(lines[j]) && headingLevel(lines[j]) <= headingLevel(lines[i]))) continue;
+      }
+      out.push(lines[i]);
+    }
+    if (out.length === lines.length) break;
+    lines = out;
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** Removes sentences with dollar figures that AutoDyn's data, the conversation or the user didn't supply. */
 export function stripUnverifiedMoney(reply: string, knownText: string) {
   const known = numbersIn(knownText);

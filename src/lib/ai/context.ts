@@ -7,7 +7,9 @@ import { explainAnalysis } from "@/lib/analysis/explain";
 import { metricRows, rowDelta } from "@/lib/analysis/metrics";
 import { NUMERIC_FIELDS, SPEC_LABEL, SURFACE_OPTIONS } from "@/lib/domain/fields";
 import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
-import type { AnalysisConfig, NumericSpecKey, SpecKey, SpecValues } from "@/lib/domain/types";
+import { applyProposal } from "@/lib/ai/apply";
+import type { CurveChoice } from "@/lib/domain/powerTorque";
+import type { AnalysisConfig, NumericSpecKey, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { SPEC_KEYS } from "@/lib/domain/types";
 import type { AnalysisResult } from "@/lib/physics/analysis";
 import { toDisplay, unitLabel, type UnitSystem } from "@/lib/units";
@@ -29,16 +31,25 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 /** A proposal shown in the chat but not applied yet (nothing has been simulated for it). */
 export type PendingProposal = { vehicle: string | null; needsChoice: boolean; changes: string[] };
 
-/** The latest proposal of the open chat that is still waiting for Apply, in context form. */
-export function pendingProposalOf(states: { proposal: Proposal; status: string; selected: Record<string, boolean>; chosen: unknown }[]): PendingProposal | null {
+type ProposalLike = { proposal: Proposal; status: string; selected: Record<string, boolean>; chosen: SpecSet | null; edits?: Record<string, number | string>; curveChoice?: CurveChoice | null };
+
+/**
+ * The latest proposal of the open chat that is still waiting for Apply, in context form. With the
+ * workspace configuration, values AutoDyn would model for it (estimated torque) are listed too.
+ */
+export function pendingProposalOf(states: ProposalLike[], config?: AnalysisConfig, units: UnitSystem = "imperial"): PendingProposal | null {
   const p = [...states].reverse().find((s) => s.status === "pending");
   if (!p) return null;
   const v = p.proposal.vehicle;
-  return {
-    vehicle: v ? v.label : null,
-    needsChoice: v?.kind === "choose" && !p.chosen,
-    changes: p.proposal.changes.filter((c) => p.selected[c.id] !== false).map((c) => `${SPEC_LABEL[c.key as SpecKey] ?? c.key} ${c.display}`),
-  };
+  const changes = p.proposal.changes.filter((c) => p.selected[c.id] !== false).map((c) => `${SPEC_LABEL[c.key as SpecKey] ?? c.key} ${c.display}`);
+  if (config) {
+    const { curve } = applyProposal(config, p.proposal, p);
+    for (const d of curve?.derived ?? []) {
+      const def = NUMERIC_FIELDS[d.key];
+      changes.push(`${def.label} ${toDisplay(def.quantity, d.to, units).toFixed(0)} ${unitLabel(def.quantity, units)} (estimated by AutoDyn's proportional-curve assumption)`);
+    }
+  }
+  return { vehicle: v ? v.label : null, needsChoice: v?.kind === "choose" && !p.chosen, changes };
 }
 
 export function buildAssistantContext(

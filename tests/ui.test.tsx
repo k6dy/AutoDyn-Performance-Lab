@@ -1326,8 +1326,26 @@ describe("formatted assistant answers", () => {
   });
 });
 
+describe("Manual Setup uses the same power/torque model", () => {
+  it("+60 hp alone is flagged; 'Adjust related values' applies the estimated torque only when the user confirms", async () => {
+    renderApp();
+    await loadC300();
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-peakPowerKw", "+60");
+    // Same validation as the AI path: 301 hp can't come from 273 lb·ft at 5,550 rpm. Nothing changes by itself.
+    expect(await screen.findAllByText(/requires more torque than the stated peak torque/)).not.toHaveLength(0);
+    expect(document.body.textContent).toMatch(/Peak torque: 273 lb·ft → 341 lb·ft/);
+    fireEvent.click(screen.getByRole("button", { name: "Adjust related values" }));
+    await waitFor(() => expect(screen.queryByText(/requires more torque than the stated peak torque/)).toBeNull());
+    expect(screen.queryByRole("button", { name: "Adjust related values" })).toBeNull();
+    fireEvent.click(runButton());
+    expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*341/);
+    expect((await metricRow(/Peak power/)).textContent).toMatch(/241[\s\S]*301/);
+  });
+});
+
 describe("multipart analysis request in the app", () => {
-  it("proposes the vehicle and +60 hp for review, reports the real status, never applies invalid values, and one Enter press = one answer", async () => {
+  it("C300 +60 hp acceptance: review shows requested and estimated values, Apply runs the engine, results and feasibility appear, and the saved analysis reopens with the approved inputs", async () => {
     modelOutput = {
       intent: "modify",
       reply: "Loading the 2015 C300 4MATIC as the stock baseline; the modified scenario adds 60 hp.",
@@ -1345,24 +1363,82 @@ describe("multipart analysis request in the app", () => {
     });
     fireEvent.keyDown(input, { key: "Enter" });
     fireEvent.keyDown(input, { key: "Enter", repeat: true }); // held key
-    await within(chatLog()).findByText(/Simulation status:/, undefined, { timeout: 5000 });
-    expect(assistantCalls).toBe(1);
+    await within(chatLog()).findByText(/No — nothing has been simulated yet\./, undefined, { timeout: 5000 });
+    expect(assistantCalls).toBe(1); // one Enter press = one answer
     expect(within(chatLog()).getAllByText(/Loading the 2015 C300 4MATIC/)).toHaveLength(1);
     expect(within(chatLog()).queryByText(/Not answered/)).toBeNull();
+    expect(within(chatLog()).getByText(/estimated torque curve so power and torque stay consistent/)).toBeTruthy();
+
+    // Review: requested change, modeled (estimated) torque, verified stock baseline, validation and status.
+    const panel = screen.getAllByRole("region", { name: "Review changes" })[0];
+    const text = panel.textContent ?? "";
+    expect(text).toMatch(/Requested changes[\s\S]*241 hp → 301 hp[\s\S]*\(\+60 hp\)/);
+    expect(text).toMatch(/Stock baseline[\s\S]*Peak power 241 hp[\s\S]*Peak torque 273 lb·ft/);
+    expect(text).toMatch(/Modeled assumptions[\s\S]*Estimated peak torque[\s\S]*Estimated[\s\S]*273 lb·ft → 341 lb·ft/);
+    expect(text).toMatch(/scaled the whole torque curve by the same \+24\.9%/);
+    expect(text).toMatch(/Unchanged in Modified:.*Vehicle weight \(curb\) 3594 lb.*Torque peak speed 1300 rpm.*Power peak speed 5550 rpm/);
+    expect(text).toMatch(/Valid configuration/);
+    expect(text).not.toMatch(/requires more torque|Blocking conflict/);
+    expect(text).toMatch(/Simulation status: Proposal pending · not applied · not simulated/);
     const [apply] = await screen.findAllByRole("button", { name: /Apply to Simulation/ });
+    expect(apply.hasAttribute("disabled")).toBe(false);
     expect(screen.getByText(/No vehicle yet/)).toBeTruthy(); // nothing applied before approval
-    expect(document.body.textContent).toMatch(/241 hp → 301 hp/);
-    // +60 hp without more torque fails AutoDyn's power/torque check: Apply is blocked and the status says why.
-    expect(apply.hasAttribute("disabled")).toBe(true);
-    expect(within(chatLog()).getByText(/input validation blocks these values/)).toBeTruthy();
-    fireEvent.click(apply);
-    expect(screen.getByText(/No vehicle yet/)).toBeTruthy();
     expect(screen.queryByText(/Physics engine results for/)).toBeNull();
-    await waitFor(() => expect(chatItems()).toHaveLength(1));
+
+    // Approve → the deterministic engine runs with the approved scenario.
+    fireEvent.click(apply);
+    expect(await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: /View results/ })[0]);
+    expect((await metricRow(/Peak power/)).textContent).toMatch(/241[\s\S]*301/);
+    expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*341/);
+    const zeroTo60 = (await metricRow(/0–60 mph/)).textContent;
+    expect(screen.getByTestId("feasibility-stock").querySelector("[data-feasibility]")).toBeTruthy();
+    expect(screen.getByTestId("feasibility-modified").querySelector("[data-feasibility]")!.getAttribute("data-feasibility")).toBe("questionable");
+    expect(screen.getByTestId("feasibility-modified").textContent).toMatch(/no component ratings available/);
+
+    // Saved automatically; reopening restores the approved inputs and identical results.
+    await savedIndicator();
+    await new Promise((r) => setTimeout(r, 400));
     unmount();
     renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Start fresh" }));
+    await openSavedTab();
+    expect(rows()).toHaveLength(1);
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: /^Open / }));
+    expect((await metricRow(/0–60 mph/)).textContent).toBe(zeroTo60);
+    expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*341/);
     await openAssistant();
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
     await waitFor(() => expect(within(chatLog()).getByText(/Loading the 2015 C300 4MATIC/)).toBeTruthy(), { timeout: 5000 });
+  });
+
+  it("an explicit torque limit is respected: the conflict is shown and only an approved option unblocks Apply", async () => {
+    modelOutput = {
+      intent: "modify",
+      reply: "The modified scenario adds 60 hp with peak torque kept.",
+      vehicle: { mentioned: true, year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" },
+      useCurrentVehicle: false,
+      changes: [{ scenario: "modified", field: "power", operation: "change", value: 60, unit: "hp", option: "", reason: "60 additional horsepower" }],
+      view: "compare",
+      runSimulation: true,
+      followUpQuestion: null,
+    };
+    renderApp();
+    await openAssistant();
+    await ask("Analyze a stock 2015 Mercedes-Benz C300 4MATIC. Add 60 horsepower but keep peak torque at 273 lb-ft.");
+    await screen.findAllByText(/adds 60 hp/, undefined, { timeout: 5000 });
+    const panel = () => screen.getAllByRole("region", { name: "Review changes" })[0];
+    expect(panel().textContent).toMatch(/Peak torque[\s\S]*273 lb·ft → 273 lb·ft/);
+    expect(panel().textContent).toMatch(/Blocking conflict/);
+    expect(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0].hasAttribute("disabled")).toBe(true);
+    fireEvent.click(within(panel()).getByRole("button", { name: /Move the power peak to 5,800 rpm/ }));
+    await waitFor(() => expect(panel().textContent).toMatch(/Valid configuration/));
+    expect(panel().textContent).toMatch(/Power peak speed[\s\S]*5550 rpm → 5800 rpm/);
+    expect(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0].hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0]);
+    await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 });
+    fireEvent.click(screen.getAllByRole("button", { name: /View results/ })[0]);
+    expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*273/); // the stated limit was never changed
   });
 });
 

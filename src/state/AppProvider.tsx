@@ -41,7 +41,7 @@ function contextOf(s: AppState) {
     s.config,
     s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null,
     s.ui.units,
-    pendingProposalOf(Object.values(s.chat.proposals)),
+    pendingProposalOf(Object.values(s.chat.proposals), s.config, s.ui.units),
     snap ? { savedAt: snap.createdAt, engineCurrent: snap.engineVersion === ENGINE_VERSION } : null,
   );
 }

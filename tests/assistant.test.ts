@@ -7,6 +7,8 @@ import { MemoryRateLimiter } from "@/lib/ai/rateLimit.server";
 import type { ModelOutput } from "@/lib/ai/schema";
 import type { AssistantResponse, Proposal } from "@/lib/ai/types";
 import { AI_LIMITS } from "@/lib/ai/types";
+import { MODEL_SOURCE, relatedValues } from "@/lib/domain/powerTorque";
+import { effectiveValues } from "@/lib/domain/scenario";
 import { runAnalysis } from "@/lib/physics/analysis";
 import { allDatasetTrims } from "@/lib/vehicles/dataset.server";
 import { hpToKw, kwToHp, lbToKg } from "@/lib/units";
@@ -248,7 +250,10 @@ describe("proposal application requires confirmation", () => {
   it("the applied AI configuration runs through the same physics engine", () => {
     const { config: next } = applyProposal(config(), proposal, { selected: { c0: true, c1: true } });
     const manual = config();
+    // Manual Setup with the same inputs: +40 hp, -150 lb and "Adjust related values" (same torque model).
     manual.modified = { overrides: { peakPowerKw: { value: hpToKw(281), provenance: "user" }, curbMassKg: { value: lbToKg(3399), provenance: "user" } } };
+    const related = relatedValues(manual.stock!.values, effectiveValues(manual, "modified")!, manual.stock!.identity)!;
+    for (const d of related.derived) manual.modified.overrides[d.key] = { value: d.to, provenance: "estimated", source: MODEL_SOURCE, note: d.reason };
     expect(runAnalysis(next).modified!.metrics.zeroTo60S).toBeCloseTo(runAnalysis(manual).modified!.metrics.zeroTo60S!, 9);
   });
 });

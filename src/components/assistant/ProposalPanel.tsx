@@ -1,14 +1,15 @@
 "use client";
 
 import { Check, PencilLine, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { IssueList } from "@/components/manual/ManualSetup";
 import LoadingStage from "@/components/LoadingStage";
-import { Button, cx, Notice, ProvenanceTag } from "@/components/ui";
+import { Button, cx, ProvenanceTag } from "@/components/ui";
 import { applyProposal, evaluateProposal, proposalVehicle } from "@/lib/ai/apply";
 import type { ProposedChange } from "@/lib/ai/types";
 import { NUMERIC_FIELDS, SPEC_LABEL, SURFACE_OPTIONS } from "@/lib/domain/fields";
-import type { NumericSpecKey, SpecKey, SpecSet } from "@/lib/domain/types";
+import { effectiveValues } from "@/lib/domain/scenario";
+import type { NumericSpecKey, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
 import { fromDisplay, toDisplay, unitLabel, type Quantity, type UnitSystem } from "@/lib/units";
 import { customSpecSet, vehicleLabel } from "@/lib/vehicles/normalize";
@@ -40,8 +41,17 @@ function show(value: number | string | null, quantity: Quantity | undefined, uni
 
 const issueKey = (i: { scenario: string; key?: string; message: string }) => `${i.scenario}|${i.key}|${i.message}`;
 
+/** Parameters worth naming as unchanged — never the whole advanced list. */
+const RELEVANT: NumericSpecKey[] = ["peakPowerKw", "peakTorqueNm", "curbMassKg", "peakTorqueRpm", "peakPowerRpm"];
+
+const specText = (values: SpecValues, key: NumericSpecKey, units: UnitSystem) => show(values[key].value, NUMERIC_FIELDS[key].quantity, units);
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return <div className="mb-1.5 text-xs font-medium text-muted">{children}</div>;
+}
+
 export default function ProposalPanel({ ps }: { ps: ProposalState }) {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, running, stale } = useApp();
   const [editing, setEditing] = useState(false);
   const [ack, setAck] = useState(false);
   const [choosing, setChoosing] = useState<string | null>(null);
@@ -64,7 +74,20 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
   const newWarnings = newIssues.filter((i) => i.severity === "warning");
   const selectedCount = proposal.changes.filter((c) => ps.selected[c.id]).length;
   const nothingToApply = !vehicle && selectedCount === 0;
-  const valid = pending && !needsChoice && !nothingToApply && newErrors.length === 0 && (newWarnings.length === 0 || ack);
+  const curve = preview.curve;
+  const conflict = curve?.status === "conflict";
+  const valid = pending && !needsChoice && !nothingToApply && !conflict && newErrors.length === 0 && (newWarnings.length === 0 || ack);
+  const verdict = conflict || newErrors.length ? "error" : newWarnings.length ? "warning" : "ok";
+
+  // Baseline and unchanged values: only the parameters a modification commonly touches.
+  const touchesModified = proposal.changes.some((c) => c.target === "modified" && ps.selected[c.id]);
+  const stockValues = preview.config.stock?.values ?? null;
+  const modValues = preview.config.modified ? effectiveValues(preview.config, "modified") : null;
+  const changedKeys = new Set<string>([
+    ...proposal.changes.filter((c) => c.target === "modified" && ps.selected[c.id]).map((c) => c.key),
+    ...(curve?.derived.map((d) => d.key) ?? []),
+  ]);
+  const unchanged = touchesModified && modValues ? RELEVANT.filter((k) => !changedKeys.has(k) && modValues[k].value != null) : [];
 
   const choose = async (trimId: string) => {
     setChoosing(trimId);
@@ -155,9 +178,27 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
           </div>
         )}
 
+        {touchesModified && stockValues && (
+          <div className="text-xs leading-5">
+            <SectionLabel>Stock baseline (stays unchanged)</SectionLabel>
+            <ul className="flex flex-wrap gap-x-3 gap-y-1 text-muted">
+              {(["peakPowerKw", "peakTorqueNm", "curbMassKg"] as NumericSpecKey[])
+                .filter((k) => stockValues[k].value != null)
+                .map((k) => (
+                  <li key={k} className="flex items-center gap-1.5">
+                    <span>
+                      {NUMERIC_FIELDS[k].label} <span className="num text-stock">{specText(stockValues, k, units)}</span>
+                    </span>
+                    <ProvenanceTag provenance={stockValues[k].provenance} title={stockValues[k].source} />
+                  </li>
+                ))}
+            </ul>
+          </div>
+        )}
+
         {proposal.changes.length > 0 && (
           <div>
-            <div className="mb-1.5 text-xs font-medium text-muted">Values that will change</div>
+            <SectionLabel>Requested changes</SectionLabel>
             <ul className="space-y-2">
               {evaluation.rows.map((row) => {
                 const c = row.change;
@@ -178,7 +219,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
                         <span className="flex flex-wrap items-center gap-1.5">
                           <span className="font-medium text-ink">{m.label}</span>
                           <span className="text-[11px] text-faint">{c.target === "conditions" ? "Conditions" : c.target === "modified" ? "Modified" : "Stock"}</span>
-                          <ProvenanceTag provenance="user" title="User-provided assumption" />
+                          <ProvenanceTag provenance="user" title="User-provided (from your request)" />
                         </span>
                         <span className="num mt-0.5 block text-[13px] text-muted">
                           {show(row.from, m.quantity, units)} → <span className={c.target === "modified" ? "text-modified" : c.target === "stock" ? "text-stock" : "text-ink"}>{row.to == null ? "—" : show(row.to, m.quantity, units)}</span>
@@ -223,6 +264,74 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
           </div>
         )}
 
+        {curve && curve.derived.length > 0 && (
+          <div>
+            <SectionLabel>Modeled assumptions</SectionLabel>
+            <ul className="space-y-2">
+              {curve.derived.map((d) => {
+                const q = NUMERIC_FIELDS[d.key].quantity;
+                const label = d.key === "peakTorqueNm" ? "Estimated peak torque" : d.key === "peakPowerKw" ? "Estimated peak power" : NUMERIC_FIELDS[d.key].label;
+                return (
+                  <li key={d.key} className="rounded-md border border-dashed border-line-strong px-2.5 py-2">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-medium text-ink">{label}</span>
+                      <span className="text-[11px] text-faint">Modified</span>
+                      <ProvenanceTag provenance="estimated" title="Derived by AutoDyn's documented modeling assumption — not a published figure" />
+                    </span>
+                    <span className="num mt-0.5 block text-[13px] text-muted">
+                      {show(d.from, q, units)} → <span className="text-modified">{show(d.to, q, units)}</span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {curve.assumption && (
+              <p className="mt-1.5 text-[11.5px] leading-4 text-faint">
+                {curve.assumption} The simulation predicts performance for this curve; it does not show that real hardware could produce it.
+              </p>
+            )}
+            {curve.choice && pending && (
+              <button
+                type="button"
+                onClick={() => dispatch({ type: "proposalCurveChoice", proposalId: proposal.id, choice: null })}
+                className="mt-1 text-xs text-muted underline decoration-dotted underline-offset-4 hover:text-ink"
+              >
+                Undo this adjustment
+              </button>
+            )}
+          </div>
+        )}
+        {curve?.status === "consistent" && curve.assumption && <p className="text-[11.5px] leading-4 text-faint">{curve.assumption}</p>}
+
+        {conflict && curve && (
+          <div className="space-y-2 rounded-md border border-error/40 bg-error/5 px-3 py-2 text-xs leading-5">
+            <div className="font-medium text-error">Blocking conflict</div>
+            <p className="text-muted">{curve.conflict} AutoDyn won&apos;t change a value you stated without your approval.</p>
+            {pending && curve.options.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {curve.options.map((o) => (
+                  <Button
+                    key={o.id}
+                    size="sm"
+                    variant="ghost"
+                    className="h-auto min-h-7 px-2 py-1 text-left text-xs whitespace-normal text-accent"
+                    onClick={() => dispatch({ type: "proposalCurveChoice", proposalId: proposal.id, choice: o.id })}
+                  >
+                    {o.label} (estimated)
+                  </Button>
+                ))}
+              </div>
+            )}
+            {curve.options.length === 0 && <p className="text-muted">Change the requested values, or enter a higher power-peak speed and redline in Manual Setup.</p>}
+          </div>
+        )}
+
+        {unchanged.length > 0 && modValues && (
+          <p className="text-xs leading-5 text-faint">
+            <span className="font-medium text-muted">Unchanged in Modified:</span> {unchanged.map((k) => `${NUMERIC_FIELDS[k].label} ${specText(modValues, k, units)}`).join(" · ")}
+          </p>
+        )}
+
         {proposal.rejected.length > 0 && (
           <div className="text-xs leading-4">
             <div className="mb-1 font-medium text-muted">Not included</div>
@@ -236,12 +345,17 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
           </div>
         )}
 
-        {pending && newIssues.length > 0 && (
+        {pending && !identifyOnly && !needsChoice && !nothingToApply && (
           <div className="space-y-2 rounded-md border border-line bg-bg/60 px-3 py-2">
-            <div className="text-xs font-medium text-muted">Validation</div>
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="font-medium text-muted">Validation</span>
+              <span className={cx("font-medium", verdict === "error" ? "text-error" : verdict === "warning" ? "text-warning" : "text-success")}>
+                {verdict === "error" ? "Blocking conflict" : verdict === "warning" ? "Warning — review required" : "Valid configuration"}
+              </span>
+            </div>
             <IssueList issues={newIssues} actions={false} />
-            {newErrors.length > 0 && <p className="text-xs text-error">Adjust the values or cancel — invalid inputs can&apos;t be applied.</p>}
-            {newErrors.length === 0 && newWarnings.length > 0 && (
+            {verdict === "error" && <p className="text-xs text-error">Resolve the conflict or cancel — inconsistent inputs can&apos;t be applied.</p>}
+            {verdict === "warning" && (
               <label className="flex items-start gap-2 text-xs text-[#f1d39e]">
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]" />
                 Apply these unusual values anyway.
@@ -271,12 +385,23 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
               <X size={14} aria-hidden /> Cancel
             </Button>
           </div>
-        ) : ps.status === "applied" ? (
-          <Notice tone="success">Applied to the shared configuration.</Notice>
         ) : null}
-        {pending && !identifyOnly && (
-          <p className="text-[11.5px] leading-4 text-faint">Apply runs the physics engine with these values. Edit Manually applies them and opens Manual Setup instead.</p>
-        )}
+        <p className="border-t border-line pt-2 text-[11.5px] leading-4 text-faint" data-testid="proposal-sim-status">
+          <span className="font-medium text-muted">Simulation status: </span>
+          {pending
+            ? identifyOnly
+              ? "Proposal pending · not applied · not simulated."
+              : "Proposal pending · not applied · not simulated. Apply to Simulation runs the physics engine with these values; Edit Manually applies them and opens Manual Setup."
+            : ps.status === "applied"
+              ? running
+                ? "Applied · running the physics engine…"
+                : state.result && !stale
+                  ? "Applied · simulated — the results are current."
+                  : "Applied to the shared configuration · not simulated yet."
+              : ps.status === "cancelled"
+                ? "Cancelled · nothing was applied or simulated."
+                : "Superseded · nothing from this proposal was applied."}
+        </p>
       </div>
     </section>
   );

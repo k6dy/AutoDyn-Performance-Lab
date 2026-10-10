@@ -10,6 +10,7 @@ import {
   SURFACE_OPTIONS,
   TRANSMISSION_OPTIONS,
 } from "@/lib/domain/fields";
+import { relatedValues } from "@/lib/domain/powerTorque";
 import { effectiveValues } from "@/lib/domain/scenario";
 import type {
   AnalysisConfig,
@@ -24,7 +25,8 @@ import { CONSTRAINT_KEYS, NUMERIC_KEYS, type ConstraintKey, type ScenarioConstra
 import { resolveInputs } from "@/lib/physics/resolve";
 import { radSToRpm, rpmToRadS } from "@/lib/units";
 
-export type Fix = { key: SpecKey; value: number; label: string };
+/** A one-click correction. `provenance: "estimated"` marks a value derived under AutoDyn's documented modeling assumption. */
+export type Fix = { key: SpecKey; value: number; label: string; provenance?: "estimated"; note?: string };
 
 export type Issue = {
   id: string;
@@ -108,10 +110,11 @@ export function validateValues(
   const P = curve.peakPowerW;
   const T = curve.peakTorqueNm;
   const torqueLabel = SPEC_LABEL.peakTorqueNm.toLowerCase();
+  // "Adjust related values": the same proportional-curve model the AI proposal pipeline uses.
   const scaledFix = (): Fix[] => {
-    if (scenario !== "modified" || !stockValues?.peakTorqueNm.value || !stockValues.peakPowerKw.value) return [];
-    const scaled = Math.ceil(stockValues.peakTorqueNm.value * ((values.peakPowerKw.value ?? 0) / stockValues.peakPowerKw.value));
-    return scaled > T ? [{ key: "peakTorqueNm", value: scaled, label: "Scale torque by the same percentage as power" }] : [];
+    if (scenario !== "modified" || !stockValues) return [];
+    const s = relatedValues(stockValues, values, identity);
+    return (s?.derived ?? []).slice(0, 1).map((d) => ({ key: d.key, value: d.to, label: "Adjust related values (scale the curve proportionally, estimated)", provenance: "estimated" as const, note: d.reason }));
   };
 
   const rpmNeeded = radSToRpm(P / T);

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyProposal } from "@/lib/ai/apply";
 import type { Proposal } from "@/lib/ai/types";
-import { setModifiedValue } from "@/lib/domain/scenario";
+import { MODEL_SOURCE, relatedValues } from "@/lib/domain/powerTorque";
+import { effectiveValues, setModifiedValue } from "@/lib/domain/scenario";
 import { DEFAULT_CONDITIONS, type AnalysisConfig, type SpecSet, type SpecValues } from "@/lib/domain/types";
 import { assessConfig } from "@/lib/feasibility/assess";
 import { launchAccelBound, maxSpeedByPower, minZeroTo60 } from "@/lib/feasibility/bounds";
@@ -165,6 +166,10 @@ describe("feasibility engine", () => {
       runAfterApply: true,
     };
     const ai = applyProposal(base, proposal, { selected: { c0: true } }).config;
+    // Manual Setup reaches the identical scenario through "Adjust related values" (the same model).
+    const related = relatedValues(manual.stock!.values, effectiveValues(manual, "modified")!, manual.stock!.identity)!;
+    for (const d of related.derived) manual.modified!.overrides[d.key] = { value: d.to, provenance: "estimated", source: MODEL_SOURCE, note: d.reason };
+    expect(effectiveValues(ai, "modified")!.peakTorqueNm).toEqual(effectiveValues(manual, "modified")!.peakTorqueNm);
     const a = runAnalysis(manual);
     const b = runAnalysis(ai);
     expect(b.modified!.metrics).toEqual(a.modified!.metrics);

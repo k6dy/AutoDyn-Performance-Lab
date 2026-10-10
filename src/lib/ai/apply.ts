@@ -3,6 +3,7 @@
 
 import type { Proposal, ProposedChange } from "@/lib/ai/types";
 import { NUMERIC_FIELDS } from "@/lib/domain/fields";
+import { CURVE_KEYS, isCurveKey, MODEL_SOURCE, modelPowerTorque, type CurveChoice, type CurveModel } from "@/lib/domain/powerTorque";
 import { effectiveConstraints, effectiveValues, setModifiedValue, setStockValue } from "@/lib/domain/scenario";
 import type { AnalysisConfig, Conditions, ConstraintKey, NumericSpecKey, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { CONSTRAINT_KEYS } from "@/lib/domain/types";
@@ -90,31 +91,66 @@ function applyOne(config: AnalysisConfig, change: ProposedChange, to: number | s
   return setModifiedValue(withModified, key, specValue);
 }
 
+export type ProposalSelection = {
+  selected: Record<string, boolean>;
+  edits?: Record<string, number | string>;
+  chosen?: SpecSet | null;
+  /** A power/torque conflict resolution the user approved in the review panel. */
+  curveChoice?: CurveChoice | null;
+};
+
+/**
+ * Applies the selected changes (Stock first, so Modified builds on the corrected baseline), then lets
+ * the deterministic power/torque model complete the Modified curve: values the request left free
+ * are derived and applied as labeled estimates; values the user stated are never changed.
+ */
 export function applyProposal(
   config: AnalysisConfig,
   proposal: Proposal,
-  selection: { selected: Record<string, boolean>; edits?: Record<string, number | string>; chosen?: SpecSet | null },
-): { config: AnalysisConfig; applied: string[]; skipped: { id: string; reason: string }[] } {
+  selection: ProposalSelection,
+): { config: AnalysisConfig; applied: string[]; skipped: { id: string; reason: string }[]; curve: CurveModel | null } {
   const { base, rows } = evaluateProposal(config, proposal, { chosen: selection.chosen, edits: selection.edits });
   let next = base;
   const applied: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
-  const ordered = [...rows].sort((a, b) => (a.change.target === "stock" ? -1 : 0) - (b.change.target === "stock" ? -1 : 0));
-  for (const row of ordered) {
-    if (!selection.selected[row.change.id]) continue;
-    // Re-evaluate against the working config so relative changes stack correctly.
-    const evald = evaluateChange(next, row.change, selection.edits?.[row.change.id]);
-    if (evald.error || evald.to === null) {
-      skipped.push({ id: row.change.id, reason: evald.error ?? "No value" });
-      continue;
+  const pass = (target: "stock" | "other") => {
+    for (const row of rows) {
+      if ((row.change.target === "stock") !== (target === "stock") || !selection.selected[row.change.id]) continue;
+      // Re-evaluate against the working config so relative changes stack correctly.
+      const evald = evaluateChange(next, row.change, selection.edits?.[row.change.id]);
+      if (evald.error || evald.to === null) {
+        skipped.push({ id: row.change.id, reason: evald.error ?? "No value" });
+        continue;
+      }
+      // "+40 hp" / "−150 lb" on Modified stay relative to stock unless the user typed an absolute value.
+      const stockValue = next.stock?.values[row.change.key as SpecKey]?.value;
+      const relative =
+        row.change.target === "modified" && row.change.op === "add" && selection.edits?.[row.change.id] === undefined && typeof stockValue === "number" && typeof evald.to === "number"
+          ? evald.to - stockValue
+          : undefined;
+      next = applyOne(next, row.change, evald.to, relative);
+      applied.push(row.change.id);
     }
-    // "+40 hp" / "−150 lb" on Modified stay relative to stock unless the user typed an absolute value.
-    const relative = row.change.target === "modified" && row.change.op === "add" && selection.edits?.[row.change.id] === undefined ? (row.change.value as number) : undefined;
-    next = applyOne(next, row.change, evald.to, relative);
-    applied.push(row.change.id);
+  };
+  pass("stock");
+  const afterStock = next;
+  pass("other");
+
+  let curve: CurveModel | null = null;
+  const modifiedRows = rows.filter((r) => r.change.target === "modified" && applied.includes(r.change.id));
+  if (next.stock && next.modified && modifiedRows.some((r) => isCurveKey(r.change.key))) {
+    const reference = effectiveValues(afterStock, afterStock.modified ? "modified" : "stock")!;
+    const priorUser = CURVE_KEYS.filter((k) => afterStock.modified?.overrides[k]?.provenance === "user");
+    const fixed = new Set<SpecKey>([...modifiedRows.map((r) => r.change.key as SpecKey), ...priorUser]);
+    curve = modelPowerTorque({ reference, next: effectiveValues(next, "modified")!, fixed, hints: next.stock.identity, choice: selection.curveChoice ?? null });
+    for (const d of curve.derived) {
+      let value = d.to;
+      if (NUMERIC_FIELDS[d.key].integer) value = Math.round(value);
+      next = setModifiedValue(next, d.key, { value, provenance: "estimated", source: MODEL_SOURCE, note: d.reason });
+    }
   }
   if (proposal.view && proposal.view !== "stock" && !next.modified && proposal.changes.some((c) => c.target === "modified")) {
     next = { ...next, modified: { overrides: {} } };
   }
-  return { config: next, applied, skipped };
+  return { config: next, applied, skipped, curve };
 }

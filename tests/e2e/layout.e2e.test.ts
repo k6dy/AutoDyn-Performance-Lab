@@ -7,6 +7,10 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GET as assistantGet, POST as assistantPost } from "@/app/api/assistant/route";
 import { GET as healthGet } from "@/app/api/assistant/health/route";
+import { handleAssistantRequest } from "@/lib/ai/handler";
+import { MemoryRateLimiter } from "@/lib/ai/rateLimit.server";
+import type { ModelOutput } from "@/lib/ai/schema";
+import { allDatasetTrims } from "@/lib/vehicles/dataset.server";
 import { GET as makes } from "@/app/api/vehicles/makes/route";
 import { GET as models } from "@/app/api/vehicles/models/route";
 import { GET as spec } from "@/app/api/vehicles/spec/route";
@@ -470,4 +474,65 @@ suite("loader motion", () => {
       }
     }
   }, 60_000);
+});
+
+suite.each([360, 390])("AI power proposal at %ipx", (width) => {
+  it("C300 +60 hp: estimated torque in review, Apply enabled, real results — no overflow or console errors", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const { page, ctx, logs } = await newPage(width);
+    try {
+      // The real assistant pipeline with Gemini mocked: structured output for the +60 hp request.
+      const output: ModelOutput = {
+        intent: "modify",
+        reply: "The modified scenario raises peak power by 60 hp; AutoDyn derives the matching curve.",
+        vehicle: { mentioned: true, year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" },
+        useCurrentVehicle: false,
+        changes: [{ scenario: "modified", field: "power", operation: "change", value: 60, unit: "hp", option: "", reason: "60 additional horsepower" }],
+        view: "compare",
+        runSimulation: true,
+        followUpQuestion: null,
+      };
+      const status = { configured: true, model: "gemini-3.5-flash-lite", deployment: { environment: "preview", branch: "autodyn-v2", commit: "abc1234" }, provider: { status: "ok", model: "gemini-3.5-flash-lite", checkedAt: new Date().toISOString(), latencyMs: 5, source: "access" } };
+      await page.route(/\/api\/assistant(\/health)?(\?.*)?$/, async (route) => {
+        const req = route.request();
+        if (req.method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(status) });
+        const r = await handleAssistantRequest(JSON.parse(req.postData() ?? "{}"), {
+          configured: true,
+          timeoutMs: 2000,
+          callModel: async () => ({ ok: true as const, text: JSON.stringify(output) }),
+          limiter: new MemoryRateLimiter({ perMinute: 100, perDay: 100, globalPerDay: 100 }),
+          clientKey: "e2e",
+          trims: allDatasetTrims,
+          nhtsaModels: async () => [],
+        });
+        return route.fulfill({ status: r.status, contentType: "application/json", body: JSON.stringify(r.body) });
+      });
+      await page.getByRole("tab", { name: /Assistant/ }).click();
+      await send(page, "Analyze a stock 2015 Mercedes-Benz C300 4MATIC with the 2.0L turbo engine. Propose a modified version with 60 additional horsepower. Explain what will change and whether the simulation has actually run yet.");
+      const panel = page.getByRole("region", { name: "Review changes" }).first();
+      await panel.getByText("Estimated peak torque").waitFor({ timeout: 10_000 });
+      const text = (await panel.textContent()) ?? "";
+      expect(text).toMatch(/241 hp → 301 hp/);
+      expect(text).toMatch(/273 lb·ft → 341 lb·ft/);
+      expect(text).toMatch(/Valid configuration/);
+      expect(text).toMatch(/Proposal pending · not applied · not simulated/);
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await panel.scrollIntoViewIfNeeded();
+      await shot(page, `${width}-power-proposal`);
+      const apply = panel.getByRole("button", { name: /Apply to Simulation/ });
+      expect(await apply.isEnabled()).toBe(true);
+      await apply.click();
+      await page.getByText(/Physics engine results for 2015 Mercedes-Benz C300/).first().waitFor({ timeout: 15_000 });
+      await page.getByRole("button", { name: /View results/ }).first().click();
+      const table = page.getByRole("table", { name: "Computed performance metrics" });
+      await table.waitFor({ timeout: 15_000 });
+      expect(await table.getByRole("row", { name: /Peak torque/ }).textContent()).toMatch(/273[\s\S]*341/);
+      await page.getByTestId("feasibility-modified").waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await shot(page, `${width}-power-results`, true);
+      expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
 });

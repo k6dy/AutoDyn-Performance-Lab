@@ -76,6 +76,72 @@ function statedNumber(message: string, value: number) {
 
 const sanitize = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f<>]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
 
+/** Fields a user can explicitly hold fixed while changing the other ("+60 hp, keep torque"). */
+const HOLDABLE: AiField[] = ["power", "torque"];
+export const HELD_DISPLAY = "kept as is";
+
+const HOLD_VERB = String.raw`(?:keep(?:ing)?|hold(?:ing)?|maintain(?:ing)?|leav(?:e|ing)|preserv(?:e|ing)|retain(?:ing)?|lock(?:ing)?)`;
+const QUANTITY: Record<"power" | "torque", string> = {
+  power: String.raw`(?:horsepower|hp|power(?![\s-]*(?:steering|train|band|split|adder)))`,
+  torque: String.raw`torque(?![\s-]*(?:converter|vectoring|split|steer|wrench|spec))`,
+};
+const HOLD_UNIT = String.raw`(lb[-\s·]?ft|ft[-\s·]?lbs?|pound[-\s]f(?:ee|oo)t|n[·.\s-]?m|hp|horsepower|bhp|kw)`;
+
+/**
+ * Power or torque the user explicitly wants kept ("keep peak torque at 273 lb-ft", "torque unchanged",
+ * "without changing the torque"). Detected deterministically so the constraint holds even when the
+ * model leaves it out of its structured changes.
+ */
+export function heldQuantities(message: string): { field: "power" | "torque"; value: number | null; unit: AiUnit | null }[] {
+  const out: { field: "power" | "torque"; value: number | null; unit: AiUnit | null }[] = [];
+  for (const field of ["power", "torque"] as const) {
+    const q = QUANTITY[field];
+    const verb = new RegExp(String.raw`\b${HOLD_VERB}\s+(?:the\s+|its\s+|my\s+)?(?:(?:peak|stock|current|same|factory|original)\s+)*${q}\b(?:\s+(?:at|to|of|=)\s+(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*${HOLD_UNIT}?\b)?`, "i");
+    const after = new RegExp(String.raw`\b${q}\s+(?:stays?|remains?|is\s+kept|kept)?\s*(?:unchanged|the\s+same|constant|fixed|as\s+is|at\s+stock)\b`, "i");
+    const without = new RegExp(String.raw`\bwithout\s+(?:changing|raising|increasing|touching|adding)\s+(?:any\s+|the\s+|more\s+)?(?:peak\s+)?${q}\b|\bsame\s+(?:peak\s+)?${q}\b|\bno\s+(?:extra|additional|more)\s+${q}\b`, "i");
+    const m = verb.exec(message);
+    if (m) {
+      const value = m[1] ? Number(m[1].replace(/,/g, "")) : null;
+      const unitText = (m[2] ?? "").trim();
+      const unit: AiUnit | null =
+        value == null || !unitText
+          ? null
+          : field === "torque"
+            ? /^n/i.test(unitText) ? "nm" : /^(?:lb|ft|pound)/i.test(unitText) ? "lbft" : null
+            : /^(?:hp|horsepower|bhp)$/i.test(unitText) ? "hp" : /^kw$/i.test(unitText) ? "kw" : null;
+      out.push({ field, value: unit ? value : null, unit });
+    } else if (after.test(message) || without.test(message)) {
+      out.push({ field, value: null, unit: null });
+    }
+  }
+  return out;
+}
+
+/** Hold constraints from the message that the model's changes don't already cover (Modified scenario). */
+export function holdChanges(message: string, changes: ProposedChange[]): ProposedChange[] {
+  const covered = new Set(changes.filter((c) => c.target === "modified").map((c) => c.key));
+  const touchesCurve = changes.some((c) => c.target === "modified" && (c.key === "peakPowerKw" || c.key === "peakTorqueNm"));
+  if (!touchesCurve) return [];
+  const out: ProposedChange[] = [];
+  for (const h of heldQuantities(message)) {
+    const map = FIELD_MAP[h.field];
+    if (covered.has(map.key)) continue;
+    const conv = h.unit ? map.units[h.unit] : undefined;
+    const set = h.value != null && conv;
+    out.push({
+      id: `h-${h.field}`,
+      target: "modified",
+      key: map.key,
+      op: set ? "set" : "add",
+      value: set ? conv(h.value!) : 0,
+      display: set ? `${h.value} ${UNIT_TEXT[h.unit!]} (kept)` : HELD_DISPLAY,
+      reason: `You asked to keep ${map.label.toLowerCase()} fixed`,
+      statedByUser: true,
+    });
+  }
+  return out;
+}
+
 export function buildChanges(output: ModelOutput, message: string) {
   const changes: ProposedChange[] = [];
   const rejected: { text: string; reason: string }[] = [];
@@ -113,6 +179,12 @@ export function buildChanges(output: ModelOutput, message: string) {
     } else {
       if (!Number.isFinite(c.value)) {
         rejected.push({ text, reason: "Value is not a finite number." });
+        continue;
+      }
+      if (c.operation !== "set" && c.value === 0 && HOLDABLE.includes(c.field)) {
+        // "Keep torque the same" is a constraint, not a no-op: AutoDyn must not scale it.
+        seen.add(slot);
+        changes.push({ id: `c${i}`, target, key: map.key, op: "add", value: 0, display: HELD_DISPLAY, reason: sanitize(c.reason, 160), statedByUser: true });
         continue;
       }
       if (c.operation === "percent") {

@@ -3,6 +3,7 @@
 
 import type { Source, AssistantErrorCode, Proposal, SuggestedAction } from "@/lib/ai/types";
 import { resultsSummary } from "@/lib/analysis/summary";
+import type { CurveChoice } from "@/lib/domain/powerTorque";
 import { setModifiedValue, setStockValue } from "@/lib/domain/scenario";
 import type { AnalysisConfig, Conditions, ConstraintKey, ScenarioId, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
@@ -110,6 +111,8 @@ export type ProposalState = {
   selected: Record<string, boolean>;
   edits: Record<string, number | string>;
   chosen: SpecSet | null;
+  /** The user's resolution of a power/torque conflict (see domain/powerTorque). */
+  curveChoice?: CurveChoice | null;
 };
 
 export type SavedState = {
@@ -205,6 +208,7 @@ export type Action =
   | { type: "proposalEdit"; proposalId: string; changeId: string; value: number | string | undefined }
   | { type: "proposalChoose"; proposalId: string; specSet: SpecSet }
   | { type: "proposalCancel"; proposalId: string }
+  | { type: "proposalCurveChoice"; proposalId: string; choice: CurveChoice | null }
   | { type: "proposalApplied"; proposalId: string; config: AnalysisConfig; baseline: SpecSet | null; view: ResultsView | null };
 
 function withConfig(state: AppState, config: AnalysisConfig): AppState {
@@ -538,6 +542,7 @@ export function reducer(state: AppState, action: Action): AppState {
     case "proposalToggle":
     case "proposalEdit":
     case "proposalChoose":
+    case "proposalCurveChoice":
     case "proposalCancel": {
       const p = state.chat.proposals[action.proposalId];
       if (!p || p.status !== "pending") return state;
@@ -550,6 +555,7 @@ export function reducer(state: AppState, action: Action): AppState {
         next = { ...p, edits };
       }
       if (action.type === "proposalChoose") next = { ...p, chosen: action.specSet };
+      if (action.type === "proposalCurveChoice") next = { ...p, curveChoice: action.choice };
       if (action.type === "proposalCancel") next = { ...p, status: "cancelled" };
       const chat = { ...state.chat, proposals: { ...state.chat.proposals, [action.proposalId]: next } };
       return { ...state, chat: action.type === "proposalCancel" ? { ...chat, messages: noteProposal(chat, action.proposalId, "cancelled") } : chat };

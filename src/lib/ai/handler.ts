@@ -2,7 +2,7 @@
 // an API key or a real model. The route handler wires in the real Gemini caller and limiter.
 
 import { buildContents } from "@/lib/ai/prompt";
-import { buildChanges, cleanReply, clipText, completedPart, salvageReply, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposal";
+import { buildChanges, cleanReply, clipText, completedPart, holdChanges, salvageReply, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposal";
 import { modelOutputSchema, requestSchema, type AssistantRequest, type ModelOutput } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
 import { AI_LIMITS, PROVIDER_MESSAGES, SHORTENED_NOTICE } from "@/lib/ai/types";
@@ -11,7 +11,7 @@ import { appStateReply, appStatusPart, isPureAppQuestion } from "@/lib/ai/appSta
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
 import { gatherGrounding, sourcesOf, type OwnershipSources } from "@/lib/ai/grounding";
-import { stripFalseAttribution, stripUnbackedPerformance, stripUnmodeledClaims, stripUnverifiedMoney } from "@/lib/ai/guards";
+import { dropEmptySections, stripFalseAttribution, stripStatusClaims, stripUnbackedPerformance, stripUnmodeledClaims, stripUnverifiedMoney } from "@/lib/ai/guards";
 import { classifyRelevance, declineNote, isInjection, localReply } from "@/lib/ai/relevance";
 import { OUTPUT_BUDGET, planResponse } from "@/lib/ai/responsePlan";
 import { describeTopic } from "@/lib/ai/topic";
@@ -299,6 +299,8 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   }
 
   const { changes, rejected } = buildChanges(output, req.message);
+  // "…but keep peak torque at 273 lb-ft": an explicit constraint AutoDyn enforces even if the model omitted it.
+  changes.push(...holdChanges(req.message, changes));
   const hasVehicle = !!req.context.vehicle || vehicle?.kind === "load" || vehicle?.kind === "identify";
   const vehicleChanges = changes.filter((c) => c.target !== "conditions");
   if (!hasVehicle && vehicleChanges.length) {
@@ -342,6 +344,12 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
     const g = stripUnbackedPerformance(reply, known, { figures: !!pending || output.intent !== "general" });
     if (g.removed) reply = g.text || "Nothing has been simulated yet, so there are no calculated results to report.";
   }
+  // AutoDyn states the simulation status itself (status line or next-step notice), so the model's own
+  // status sentences would only repeat it.
+  if (proposal || statusPart) {
+    const st = stripStatusClaims(reply);
+    if (st.removed) reply = st.text;
+  }
   if (proposal && !statusPart) notices.push(nextStep(proposal));
   else if (!statusPart && req.context.pendingProposal && ANALYSIS_INTENTS.includes(output.intent)) {
     notices.push(req.context.pendingProposal.needsChoice ? "Not simulated yet: choose the exact variant in the pending proposal, then select Apply to Simulation." : "Not simulated yet: the proposal above is still waiting — select Apply to Simulation (or Cancel) to continue.");
@@ -366,12 +374,16 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   }
   const figures = unverifiedFigures(reply, known).filter((f) => !f.includes("$"));
   if (figures.length) notices.push(`Not verified by AutoDyn (general knowledge): ${figures.join(", ")}.`);
+  // Headings left empty by the guards (before AutoDyn appends its own lines below them).
+  reply = dropEmptySections(reply);
   // The status part is reported by AutoDyn itself: a proposal made now has not been simulated.
   if (statusPart) {
-    const status = proposal ? nextStep(proposal).replace(/^Not simulated yet: /, "No — nothing has been simulated yet. ") : statusNow;
-    if (status) reply = `${reply}\n\n**Simulation status:** ${status}`;
+    const status = proposal ? nextStep(proposal).replace(/^Not simulated yet: (\w)/, (_, c: string) => `No — nothing has been simulated yet. ${c.toUpperCase()}`) : statusNow;
+    if (status) reply = `${reply}\n\n**Simulation status:** ${status}`.trim();
   }
   if (relevance.declined?.length) reply = `${reply}\n\n${declineNote(relevance.declined)}`;
+  // Headings whose content was removed above ("### Expected Changes" with nothing under it) are dropped.
+  reply = dropEmptySections(reply) || (proposal ? "The proposal is ready for your review below." : "I couldn't produce an answer for that. Try rephrasing, or use Manual Setup.");
   const feasibilityLines = req.context.results?.feasibility ?? [];
   if (feasibilityLines.length && contradictsFeasibility(reply, feasibilityLines)) {
     notices.push(
@@ -397,18 +409,25 @@ function nextStep(p: Proposal) {
   if (v?.kind === "choose") return "Not simulated yet: choose the exact variant below, then select Apply to Simulation.";
   if (v?.kind === "identify" || v?.kind === "not_found") return "Not simulated yet: AutoDyn needs the missing specifications listed below before it can run.";
   if (!p.changes.length && !v) return "Not simulated yet: nothing in this request can be applied — see the notes below.";
-  const blocked = validationError(p);
-  if (blocked) return `Not simulated yet: AutoDyn's input validation blocks these values — ${blocked.replace(/\.$/, "")}. Adjust them in the proposal below (or cancel), then select Apply to Simulation.`;
-  return "Not simulated yet: review the proposed changes below and select Apply to Simulation to run the physics engine.";
+  const check = deterministicCheck(p);
+  if (check?.conflict) return `Not simulated yet: ${check.conflict.replace(/\.$/, "")}. Choose an option in the proposal below or adjust the values (or cancel), then select Apply to Simulation.`;
+  if (check?.error) return `Not simulated yet: AutoDyn's input validation blocks these values — ${check.error.replace(/\.$/, "")}. Adjust them in the proposal below (or cancel), then select Apply to Simulation.`;
+  const modeled = check?.derived ? ` AutoDyn added an estimated ${check.derived} so power and torque stay consistent; it's labeled in the proposal.` : "";
+  return `Not simulated yet: review the proposed changes below and select Apply to Simulation to run the physics engine.${modeled}`;
 }
 
 /**
- * The same deterministic validation the review panel applies, for a proposal that brings its own
- * vehicle — so the next step names a real blocker (e.g. power the stated torque can't produce).
+ * The same deterministic preparation and validation the review panel applies, for a proposal that
+ * brings its own vehicle — so the next step names a real blocker or the values AutoDyn modeled.
  */
-function validationError(p: Proposal): string | null {
+function deterministicCheck(p: Proposal): { error: string | null; conflict: string | null; derived: string | null } | null {
   if (p.vehicle?.kind !== "load") return null;
   const empty = { stock: null, modified: null, conditions: { ...DEFAULT_CONDITIONS } };
-  const { config } = applyProposal(empty, p, { selected: Object.fromEntries(p.changes.map((c) => [c.id, true])) });
-  return validateConfig(config).issues.find((i) => i.severity === "error")?.message ?? null;
+  const { config, curve } = applyProposal(empty, p, { selected: Object.fromEntries(p.changes.map((c) => [c.id, true])) });
+  const derived = curve?.derived.some((d) => d.key === "peakTorqueNm") ? "torque curve" : curve?.derived.some((d) => d.key === "peakPowerKw") ? "peak power" : null;
+  return {
+    error: validateConfig(config).issues.find((i) => i.severity === "error")?.message ?? null,
+    conflict: curve?.status === "conflict" ? curve.conflict : null,
+    derived,
+  };
 }
