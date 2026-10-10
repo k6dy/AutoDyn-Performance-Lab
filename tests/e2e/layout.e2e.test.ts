@@ -244,6 +244,111 @@ suite.each([360, 390])("saved analyses at %ipx", (width) => {
   }, 90_000);
 });
 
+async function mockAssistant(page: Page) {
+  let posts = 0;
+  const status = { configured: true, model: "gemini-3.5-flash-lite", deployment: { environment: "preview", branch: "autodyn-v2", commit: "abc1234" }, provider: { status: "ok", model: "gemini-3.5-flash-lite", checkedAt: new Date().toISOString(), latencyMs: 5, source: "access" } };
+  await page.route(/\/api\/assistant(\/health)?(\?.*)?$/, async (route) => {
+    const req = route.request();
+    if (req.method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(status) });
+    posts += 1;
+    const body = JSON.parse(req.postData() ?? "{}");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, requestId: body.requestId, reply: "A turbocharger uses exhaust energy to spin a compressor that forces more air into the engine.", followUpQuestion: null, proposal: null, suggestedAction: null, notices: [] }),
+    });
+  });
+  return () => posts;
+}
+
+async function send(page: Page, text: string) {
+  const input = page.getByLabel("Message the AI Build Assistant");
+  await input.fill(text);
+  await input.press("Enter");
+}
+
+suite.each([360, 390])("automotive assistant at %ipx", (width) => {
+  it("local rejection without a request, history drawer, usable composer, no overflow", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const { page, ctx, logs } = await newPage(width);
+    try {
+      const posts = await mockAssistant(page);
+      await page.getByRole("tab", { name: /Assistant/ }).click();
+      await page.getByText("Ask about cars, parts or your build").waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await send(page, "Do cows hibernate?");
+      await page.getByText("I'm here for cars, parts, and vehicle performance. Ask me something automotive-related.").waitFor();
+      expect(posts()).toBe(0);
+      await send(page, "How does a turbocharger work?");
+      await page.getByText(/exhaust energy to spin a compressor/).waitFor();
+      expect(posts()).toBe(1);
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+
+      // Composer stays usable: visible, inside the viewport width, focusable.
+      const composer = page.getByLabel("Message the AI Build Assistant");
+      await composer.scrollIntoViewIfNeeded();
+      const box = (await composer.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+      await shot(page, `${width}-chat`);
+
+      await page.getByRole("button", { name: "Open chat history" }).click();
+      const drawer = page.getByRole("dialog", { name: "Chat history" });
+      await drawer.waitFor();
+      await drawer.getByTestId("chat-item").first().waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await page.waitForTimeout(300); // drawer slide-in
+      await shot(page, `${width}-chat-drawer`);
+      await page.keyboard.press("Escape");
+      await drawer.waitFor({ state: "detached" });
+      expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
+});
+
+suite("automotive assistant on desktop", () => {
+  it("shows a collapsible history sidebar beside the conversation without overflow", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 } });
+    try {
+      await ctx.route("**/*", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.origin !== ORIGIN) return route.abort();
+        if (url.pathname === "/") return route.fulfill({ status: 200, contentType: "text/html", body: fs.readFileSync(path.join(NEXT, "server/app/index.html"), "utf8") });
+        if (url.pathname.startsWith("/_next/static/")) {
+          const file = path.join(NEXT, "static", decodeURIComponent(url.pathname.slice("/_next/static/".length)));
+          if (!file.startsWith(path.join(NEXT, "static")) || !fs.existsSync(file)) return route.fulfill({ status: 404, body: "" });
+          return route.fulfill({ status: 200, contentType: MIME[path.extname(file)] ?? "application/octet-stream", body: fs.readFileSync(file) });
+        }
+        return route.fulfill({ status: 404, body: "" });
+      });
+      const page = await ctx.newPage();
+      const logs: string[] = [];
+      page.on("pageerror", (e) => logs.push(e.message));
+      await page.goto(`${ORIGIN}/`);
+      await mockAssistant(page);
+      await page.getByRole("tab", { name: /AI Build Assistant/ }).click();
+      await send(page, "How does a turbocharger work?");
+      await page.getByText(/exhaust energy to spin a compressor/).waitFor();
+      const sidebar = page.getByRole("complementary", { name: "Chat history" });
+      await sidebar.getByTestId("chat-item").first().waitFor();
+      expect(await sidebar.isVisible()).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+      await page.waitForTimeout(300);
+      await shot(page, "desktop-chat");
+      await page.getByRole("button", { name: "Hide chat history" }).click();
+      await sidebar.waitFor({ state: "detached" });
+      await page.getByRole("button", { name: "Show chat history" }).click();
+      await page.getByRole("complementary", { name: "Chat history" }).waitFor();
+      expect(logs).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
+});
+
 suite("loader motion", () => {
   it("ring rotates normally and stays still with reduced motion", async () => {
     if (!browser) throw new Error("No Edge/Chrome installation found.");

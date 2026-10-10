@@ -2,6 +2,7 @@
 // chart data) live in separate object stores written in one transaction, so the list view never
 // loads every result. Falls back to an in-memory store when IndexedDB is unavailable.
 
+import { req, STORES, transact } from "@/lib/persistence/db";
 import { parseMeta, parseSaved, type SavedAnalysis, type SavedMeta } from "@/lib/persistence/schema";
 import { metaOf } from "@/lib/persistence/snapshot";
 
@@ -56,75 +57,17 @@ const newestFirst = (a: SavedMeta, b: SavedMeta) => (a.updatedAt < b.updatedAt ?
 
 // ---- IndexedDB --------------------------------------------------------------------------------
 
-export const DB_NAME = "autodyn";
-const DB_VERSION = 1;
-const META = "analyses";
-const PAYLOAD = "payloads";
-
-function req<T>(r: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
-  });
-}
-
-function done(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onabort = () => reject(tx.error ?? new DOMException("Transaction aborted", "AbortError"));
-    tx.onerror = () => reject(tx.error);
-  });
-}
+const META = STORES.analyses;
+const PAYLOAD = STORES.payloads;
 
 export class IndexedDbRepository implements AnalysisRepository {
   readonly persistent = true;
-  private db: Promise<IDBDatabase> | null = null;
 
   constructor(private factory: IDBFactory = globalThis.indexedDB) {}
 
-  private open(): Promise<IDBDatabase> {
-    if (!this.db) {
-      this.db = new Promise<IDBDatabase>((resolve, reject) => {
-        let r: IDBOpenDBRequest;
-        try {
-          r = this.factory.open(DB_NAME, DB_VERSION);
-        } catch (err) {
-          reject(err);
-          return;
-        }
-        r.onupgradeneeded = () => {
-          const db = r.result;
-          if (!db.objectStoreNames.contains(META)) {
-            const s = db.createObjectStore(META, { keyPath: "id" });
-            s.createIndex("fingerprint", "fingerprint", { unique: false });
-            s.createIndex("updatedAt", "updatedAt", { unique: false });
-          }
-          if (!db.objectStoreNames.contains(PAYLOAD)) db.createObjectStore(PAYLOAD, { keyPath: "id" });
-        };
-        r.onsuccess = () => {
-          const db = r.result;
-          db.onversionchange = () => db.close();
-          resolve(db);
-        };
-        r.onerror = () => reject(r.error);
-        r.onblocked = () => reject(new StorageError("unavailable", STORAGE_MESSAGES.unavailable));
-      }).catch((err) => {
-        this.db = null;
-        throw toStorageError(err);
-      });
-    }
-    return this.db;
-  }
-
   private async run<T>(mode: IDBTransactionMode, fn: (meta: IDBObjectStore, payload: IDBObjectStore) => Promise<T> | T): Promise<T> {
     try {
-      const db = await this.open();
-      const tx = db.transaction([META, PAYLOAD], mode);
-      const finished = done(tx);
-      finished.catch(() => undefined); // observed below; avoids an unhandled rejection if fn throws first
-      const value = await fn(tx.objectStore(META), tx.objectStore(PAYLOAD));
-      await finished;
-      return value;
+      return await transact(this.factory, [META, PAYLOAD], mode, (s) => fn(s[META], s[PAYLOAD]));
     } catch (err) {
       throw toStorageError(err);
     }

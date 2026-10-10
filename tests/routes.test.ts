@@ -67,7 +67,7 @@ describe("assistant API route", () => {
       new Request("http://test/api/assistant", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ requestId: "abcdefgh1234", message: "hi", history: [], context: { vehicle: null, stockSpecs: [], modifiedChanges: null, conditions: { temperature: "", elevation: "", surface: "" }, units: "imperial", results: null } }),
+        body: JSON.stringify({ requestId: "abcdefgh1234", message: "How does a turbocharger work?", history: [], context: { vehicle: null, stockSpecs: [], modifiedChanges: null, conditions: { temperature: "", elevation: "", surface: "" }, units: "imperial", results: null } }),
       }),
     );
     expect(res.status).toBe(503);

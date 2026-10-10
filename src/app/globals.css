@@ -42,6 +42,16 @@
   --animate-fade: fade 200ms ease-out both;
   --animate-fade-delayed: fade 240ms ease-out 120ms both;
   --animate-ring: ring-spin 1.6s linear infinite;
+  --animate-drawer: drawer 220ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes drawer {
+  from {
+    transform: translateX(-24px);
+  }
+  to {
+    transform: none;
+  }
 }
 
 @keyframes ring-spin {
@@ -101,6 +111,11 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+}
+
+/* The composer's container shows focus with its accent border; avoid a second ring inside it. */
+#chat-input:focus-visible {
+  outline: none;
 }
 
 input,

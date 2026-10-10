@@ -9,6 +9,7 @@ import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
 import { toActive, type ActiveSaved } from "@/lib/persistence/autosave";
 import type { DraftOffer } from "@/lib/persistence/draft";
+import { MAX_CONVERSATION_MESSAGES, type Conversation } from "@/lib/persistence/conversations";
 import type { SavedAnalysis } from "@/lib/persistence/schema";
 import { fingerprint, isHistorical } from "@/lib/persistence/snapshot";
 import type { AnalysisResult } from "@/lib/physics/analysis";
@@ -24,12 +25,81 @@ export type ChatMessage = {
   createdAt: number;
   proposalId?: string;
   notices?: string[];
-  errorCode?: AssistantErrorCode;
+  errorCode?: AssistantErrorCode | string;
   followUp?: string | null;
   suggestedAction?: SuggestedAction;
-  /** Deterministic results summary posted after an assistant-applied run. */
-  kind?: "results";
+  /** results: deterministic summary after an assistant-applied run · local: answered by the relevance gate. */
+  kind?: "results" | "local";
+  /** User message whose request failed; kept for retry and never sent as history. */
+  failed?: boolean;
+  /** Saved analysis produced by this run (results messages). */
+  analysisId?: string;
+  /** Persisted, read-only summary of the proposal attached to this message. */
+  proposalNote?: string;
 };
+
+export type ChatState = {
+  /** Conversation ID, assigned when the first message is sent. */
+  id: string | null;
+  title: string;
+  customTitle: boolean;
+  createdAt: string | null;
+  /** Vehicle the conversation is about (offered for loading when reopened, never applied silently). */
+  vehicle: SpecSet | null;
+  analysisIds: string[];
+  /** Opened from history in this session. */
+  restored: boolean;
+  messages: ChatMessage[];
+  proposals: Record<string, ProposalState>;
+  /** Request ID in flight for this conversation. */
+  pending: string | null;
+  storage: { status: "idle" | "saved" | "error" | "memory"; message: string | null };
+  /** Bumped when stored conversations change, so the history list reloads. */
+  listRevision: number;
+  /** Changes when a different conversation is shown (New chat / Open), for the switch transition. */
+  view: number;
+};
+
+export const NEW_CHAT_TITLE = "New Conversation";
+
+const freshChat = (listRevision = 0, view = 0): ChatState => ({
+  id: null,
+  title: NEW_CHAT_TITLE,
+  customTitle: false,
+  createdAt: null,
+  vehicle: null,
+  analysisIds: [],
+  restored: false,
+  messages: [],
+  proposals: {},
+  pending: null,
+  storage: { status: "idle", message: null },
+  listRevision,
+  view,
+});
+
+function proposalNote(p: Proposal, status: ProposalState["status"]) {
+  const parts = [p.vehicle && "label" in p.vehicle ? p.vehicle.label : null, ...p.changes.map((c) => c.display)].filter(Boolean);
+  const verb = status === "applied" ? "applied" : status === "cancelled" ? "cancelled" : status === "superseded" ? "superseded" : "not applied";
+  return `Proposal (${verb}): ${parts.join(" · ") || "no changes"}`.slice(0, 600);
+}
+
+function noteProposal(chat: ChatState, proposalId: string, status: ProposalState["status"]): ChatMessage[] {
+  const p = chat.proposals[proposalId];
+  if (!p) return chat.messages;
+  return chat.messages.map((m) => (m.proposalId === proposalId ? { ...m, proposalNote: proposalNote(p.proposal, status) } : m));
+}
+
+/** Pending proposals can't be applied to a workspace they weren't made for. */
+function supersedePending(chat: ChatState): ChatState {
+  let next = chat;
+  for (const [id, p] of Object.entries(chat.proposals)) {
+    if (p.status !== "pending") continue;
+    next = { ...next, proposals: { ...next.proposals, [id]: { ...p, status: "superseded" } } };
+    next = { ...next, messages: noteProposal(next, id, "superseded") };
+  }
+  return next;
+}
 
 export type ProposalState = {
   proposal: Proposal;
@@ -66,7 +136,7 @@ export type AppState = {
   restoredFixes: string[];
   saved: SavedState;
   ui: { mode: Mode; editing: ScenarioId; view: ResultsView; units: UnitSystem; ackRevision: number | null; advancedOpen: boolean };
-  chat: { messages: ChatMessage[]; proposals: Record<string, ProposalState>; pending: string | null };
+  chat: ChatState;
 };
 
 export const initialState: AppState = {
@@ -79,12 +149,12 @@ export const initialState: AppState = {
   restoredFixes: [],
   saved: { active: null, snapshot: null, recalculatedFrom: null, status: "idle", error: null, listRevision: 0 },
   ui: { mode: "manual", editing: "stock", view: "compare", units: "imperial", ackRevision: null, advancedOpen: false },
-  chat: { messages: [], proposals: {}, pending: null },
+  chat: freshChat(),
 };
 
 export type Action =
   | { type: "offerDraft"; draft: DraftOffer }
-  | { type: "continueDraft"; record: SavedAnalysis | null }
+  | { type: "continueDraft"; record: SavedAnalysis | null; conversationId: string }
   | { type: "discardDraft" }
   | { type: "newAnalysis" }
   | { type: "openSaved"; record: SavedAnalysis; verified: boolean | null }
@@ -115,9 +185,19 @@ export type Action =
   | { type: "requestRun"; navigate: boolean; source?: "manual" | "assistant" | "recalc" }
   | { type: "runComplete"; analysis: AnalysisResult; revision: number }
   | { type: "runFailed" }
-  | { type: "chatSend"; message: ChatMessage }
-  | { type: "chatReceive"; requestId: string; message: ChatMessage; proposal: Proposal | null }
+  | { type: "chatSend"; message: ChatMessage; conversationId: string; title: string | null; vehicle: SpecSet | null }
+  | { type: "chatLocal"; message: ChatMessage; reply: ChatMessage; conversationId: string; vehicle: SpecSet | null }
+  | { type: "chatReceive"; requestId: string; conversationId: string; message: ChatMessage; proposal: Proposal | null }
+  | { type: "chatFailed"; requestId: string; conversationId: string; messageId: string; code: AssistantErrorCode }
+  | { type: "chatRetry"; messageId: string; requestId: string }
+  | { type: "chatDiscard"; messageId: string }
+  | { type: "chatLate"; conversationId: string; userMessageId: string; message: ChatMessage }
+  | { type: "chatNew" }
   | { type: "chatClear" }
+  | { type: "chatOpen"; conversation: Conversation }
+  | { type: "chatRenamed"; id: string; title: string }
+  | { type: "chatDeleted"; ids: string[] | "all" }
+  | { type: "chatStored"; id: string; status: ChatState["storage"]["status"]; message?: string | null }
   | { type: "proposalToggle"; proposalId: string; changeId: string }
   | { type: "proposalEdit"; proposalId: string; changeId: string; value: number | string | undefined }
   | { type: "proposalChoose"; proposalId: string; specSet: SpecSet }
@@ -176,7 +256,8 @@ export function reducer(state: AppState, action: Action): AppState {
         result: matches ? { analysis: record!.result, revision, origin: "saved" } : null,
         draftOffer: null,
         restoredFixes: d.fixes,
-        chat: { messages: d.messages, proposals: {}, pending: null },
+        // Drafts from earlier builds carried chat messages; they become a conversation of their own.
+        chat: d.messages.length && !state.chat.messages.length ? { ...freshChat(state.chat.listRevision), id: action.conversationId, createdAt: new Date(d.messages[0].createdAt || Date.now()).toISOString(), messages: d.messages, vehicle: d.config.stock } : state.chat,
         saved: record
           ? { ...state.saved, active: toActive(record), snapshot: matches ? snapshotOf(record, null) : null, recalculatedFrom: null, status: "saved", error: null }
           : unlinked(state.saved),
@@ -186,16 +267,17 @@ export function reducer(state: AppState, action: Action): AppState {
     case "discardDraft":
       return { ...state, draftOffer: null };
     case "newAnalysis":
-      // Clears only the active workspace: saved analyses and the unit preference are kept.
+      // Clears only the active workspace: saved analyses, conversations and the unit preference are kept.
       return {
         ...initialState,
         revision: state.revision + 1,
         saved: { ...unlinked(state.saved), listRevision: state.saved.listRevision },
+        chat: supersedePending(state.chat),
         ui: { ...initialState.ui, units: state.ui.units },
       };
     case "openSaved": {
       const next = loadRecord(state, action.record, action.verified);
-      return { ...next, draftOffer: null, chat: { messages: [], proposals: {}, pending: null }, ui: { ...next.ui, mode: "results" } };
+      return { ...next, draftOffer: null, chat: supersedePending(state.chat), ui: { ...next.ui, mode: "results" } };
     }
     case "revertToSaved":
       if (state.saved.active?.id !== action.record.id) return state;
@@ -211,9 +293,20 @@ export function reducer(state: AppState, action: Action): AppState {
     }
     case "recalcResolved":
       return { ...state, saved: { ...state.saved, recalculatedFrom: null } };
-    case "saveSucceeded":
-      if (state.result?.analysis.id !== action.runId) return { ...state, saved: { ...state.saved, listRevision: state.saved.listRevision + 1 } };
-      return { ...state, saved: { ...state.saved, active: action.active, status: "saved", error: null, listRevision: state.saved.listRevision + 1 } };
+    case "saveSucceeded": {
+      // The assistant's results message (and its conversation) link to the saved analysis by ID.
+      const rid = `r-${action.runId}`;
+      const linked = state.chat.messages.some((m) => m.id === rid);
+      const chat = linked
+        ? {
+            ...state.chat,
+            messages: state.chat.messages.map((m) => (m.id === rid ? { ...m, analysisId: action.active.id } : m)),
+            analysisIds: [...new Set([...state.chat.analysisIds, action.active.id])],
+          }
+        : state.chat;
+      if (state.result?.analysis.id !== action.runId) return { ...state, chat, saved: { ...state.saved, listRevision: state.saved.listRevision + 1 } };
+      return { ...state, chat, saved: { ...state.saved, active: action.active, status: "saved", error: null, listRevision: state.saved.listRevision + 1 } };
+    }
     case "saveFailed":
       if (state.result?.analysis.id !== action.runId) return state;
       return { ...state, saved: { ...state.saved, status: "error", error: action.message } };
@@ -321,7 +414,7 @@ export function reducer(state: AppState, action: Action): AppState {
               createdAt: Date.now(),
               suggestedAction: "open_results" as const,
             },
-          ].slice(-60)
+          ].slice(-MAX_CONVERSATION_MESSAGES)
         : state.chat.messages;
       return {
         ...state,
@@ -336,21 +429,108 @@ export function reducer(state: AppState, action: Action): AppState {
         },
       };
     }
-    case "chatSend":
-      if (state.chat.pending) return state; // duplicate submission guard
-      return { ...state, chat: { ...state.chat, messages: [...state.chat.messages, action.message].slice(-60), pending: action.message.id } };
-    case "chatReceive": {
-      if (state.chat.pending !== action.requestId) return state; // stale or unknown response
-      const proposals = { ...state.chat.proposals };
-      if (action.proposal) {
-        for (const [id, p] of Object.entries(proposals)) if (p.status === "pending") proposals[id] = { ...p, status: "superseded" };
-        const selected = Object.fromEntries(action.proposal.changes.map((c) => [c.id, c.statedByUser]));
-        proposals[action.proposal.id] = { proposal: action.proposal, status: "pending", selected, edits: {}, chosen: null };
-      }
-      return { ...state, chat: { messages: [...state.chat.messages, action.message].slice(-60), proposals, pending: null } };
+    case "chatSend": {
+      if (state.chat.pending || state.chat.messages.length >= MAX_CONVERSATION_MESSAGES - 2) return state; // duplicate / cap guard
+      const c = state.chat;
+      if (c.id && c.id !== action.conversationId) return state;
+      return {
+        ...state,
+        chat: {
+          ...c,
+          id: action.conversationId,
+          createdAt: c.createdAt ?? new Date(action.message.createdAt).toISOString(),
+          title: !c.customTitle && action.title ? action.title : c.title,
+          vehicle: action.vehicle ?? c.vehicle,
+          messages: [...c.messages, action.message],
+          pending: action.message.id,
+        },
+      };
     }
+    case "chatLocal": {
+      const c = state.chat;
+      if (c.pending || (c.id && c.id !== action.conversationId) || c.messages.length >= MAX_CONVERSATION_MESSAGES - 2) return state;
+      return {
+        ...state,
+        chat: {
+          ...c,
+          id: action.conversationId,
+          createdAt: c.createdAt ?? new Date(action.message.createdAt).toISOString(),
+          vehicle: c.vehicle ?? action.vehicle,
+          messages: [...c.messages, { ...action.message, kind: "local" as const }, { ...action.reply, kind: "local" as const }],
+        },
+      };
+    }
+    case "chatReceive": {
+      // Stale or unknown responses (another conversation, an older request) are ignored here.
+      if (state.chat.pending !== action.requestId || state.chat.id !== action.conversationId) return state;
+      const proposals = { ...state.chat.proposals };
+      let chat: ChatState = state.chat;
+      if (action.proposal) {
+        chat = supersedePending({ ...chat, proposals });
+        const selected = Object.fromEntries(action.proposal.changes.map((c) => [c.id, c.statedByUser]));
+        chat = { ...chat, proposals: { ...chat.proposals, [action.proposal.id]: { proposal: action.proposal, status: "pending", selected, edits: {}, chosen: null } } };
+      }
+      const message = action.proposal ? { ...action.message, proposalNote: proposalNote(action.proposal, "pending") } : action.message;
+      return { ...state, chat: { ...chat, messages: [...chat.messages, message].slice(-MAX_CONVERSATION_MESSAGES), pending: null } };
+    }
+    case "chatFailed":
+      if (state.chat.pending !== action.requestId || state.chat.id !== action.conversationId) return state;
+      return {
+        ...state,
+        chat: { ...state.chat, pending: null, messages: state.chat.messages.map((m) => (m.id === action.messageId ? { ...m, failed: true, errorCode: action.code } : m)) },
+      };
+    case "chatRetry": {
+      if (state.chat.pending || !state.chat.messages.some((m) => m.id === action.messageId && m.failed)) return state;
+      return {
+        ...state,
+        chat: { ...state.chat, pending: action.requestId, messages: state.chat.messages.map((m) => (m.id === action.messageId ? { ...m, failed: false, errorCode: undefined } : m)) },
+      };
+    }
+    case "chatDiscard":
+      return { ...state, chat: { ...state.chat, messages: state.chat.messages.filter((m) => !(m.id === action.messageId && m.failed)) } };
+    case "chatLate": {
+      // A reply for a conversation that was closed and reopened while its request was in flight.
+      if (state.chat.id !== action.conversationId || state.chat.messages.some((m) => m.id === action.message.id)) return state;
+      const messages = state.chat.messages.map((m) => (m.id === action.userMessageId ? { ...m, failed: false, errorCode: undefined } : m));
+      return { ...state, chat: { ...state.chat, messages: [...messages, action.message] } };
+    }
+    case "chatNew":
     case "chatClear":
-      return { ...state, chat: { messages: [], proposals: {}, pending: null } };
+      return { ...state, chat: freshChat(state.chat.listRevision + 1, state.chat.view + 1) };
+    case "chatOpen": {
+      const c = action.conversation;
+      // A request that never finished (tab closed mid-request) is offered for retry.
+      const messages: ChatMessage[] = c.messages.map((m) => ({ ...m }));
+      const last = messages.at(-1);
+      if (last && last.role === "user" && !last.kind && !last.failed) messages[messages.length - 1] = { ...last, failed: true, errorCode: "network" };
+      return {
+        ...state,
+        chat: {
+          ...freshChat(state.chat.listRevision, state.chat.view + 1),
+          id: c.id,
+          title: c.title,
+          customTitle: c.customTitle,
+          createdAt: c.createdAt,
+          vehicle: c.vehicle,
+          analysisIds: c.analysisIds,
+          restored: true,
+          messages,
+          storage: { status: "saved", message: null },
+        },
+      };
+    }
+    case "chatRenamed":
+      return {
+        ...state,
+        chat: { ...state.chat, listRevision: state.chat.listRevision + 1, ...(state.chat.id === action.id ? { title: action.title, customTitle: true } : {}) },
+      };
+    case "chatDeleted": {
+      const gone = action.ids === "all" || (!!state.chat.id && action.ids.includes(state.chat.id));
+      return { ...state, chat: gone ? freshChat(state.chat.listRevision + 1, state.chat.view + 1) : { ...state.chat, listRevision: state.chat.listRevision + 1 } };
+    }
+    case "chatStored":
+      if (state.chat.id !== action.id) return { ...state, chat: { ...state.chat, listRevision: state.chat.listRevision + 1 } };
+      return { ...state, chat: { ...state.chat, storage: { status: action.status, message: action.message ?? null }, listRevision: state.chat.listRevision + 1 } };
     case "proposalToggle":
     case "proposalEdit":
     case "proposalChoose":
@@ -367,7 +547,8 @@ export function reducer(state: AppState, action: Action): AppState {
       }
       if (action.type === "proposalChoose") next = { ...p, chosen: action.specSet };
       if (action.type === "proposalCancel") next = { ...p, status: "cancelled" };
-      return { ...state, chat: { ...state.chat, proposals: { ...state.chat.proposals, [action.proposalId]: next } } };
+      const chat = { ...state.chat, proposals: { ...state.chat.proposals, [action.proposalId]: next } };
+      return { ...state, chat: action.type === "proposalCancel" ? { ...chat, messages: noteProposal(chat, action.proposalId, "cancelled") } : chat };
     }
     case "proposalApplied": {
       const p = state.chat.proposals[action.proposalId];
@@ -377,7 +558,7 @@ export function reducer(state: AppState, action: Action): AppState {
         baseline: action.baseline ?? state.baseline,
         saved: action.baseline ? unlinked(state.saved) : state.saved,
         ui: { ...state.ui, view: action.view ?? state.ui.view, editing: action.config.modified ? state.ui.editing : "stock" },
-        chat: { ...state.chat, proposals: { ...state.chat.proposals, [action.proposalId]: { ...p, status: "applied" } } },
+        chat: { ...state.chat, messages: noteProposal(state.chat, action.proposalId, "applied"), proposals: { ...state.chat.proposals, [action.proposalId]: { ...p, status: "applied" } } },
       };
     }
   }

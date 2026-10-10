@@ -3,7 +3,7 @@
 Vehicle performance analysis with sourced specifications, a deterministic physics engine and an optional AI build assistant.
 
 - **Manual Setup** — pick a vehicle (year → make → model → trim), decode a VIN, or enter one manually. Basic Setup needs only power and curb weight; simple controls describe a modification. Optional **Advanced Settings** expose every modeling assumption (aero, gearing, tires, conditions).
-- **AI Build Assistant** — describe a vehicle or build in plain language. Gemini interprets the request into a *proposal*; nothing changes until you press **Apply to simulation**.
+- **AI Build Assistant** — an automotive specialist: answers questions about vehicles, components, maintenance, modifications and engineering, and turns build requests into a *proposal*; nothing changes until you press **Apply to simulation**. Off-topic requests are answered locally without calling Gemini. Conversations are saved automatically and can be reopened, renamed and deleted (Chat history).
 - **Results** — one shared workspace for both modes: metrics with uncertainty ranges, Stock vs. Modified deltas, charts, deterministic engineering analysis, provenance, and JSON/CSV/print export.
 - **Saved Analyses** — every completed analysis is kept automatically in this browser (IndexedDB), with search, sort, open, rename, duplicate, delete, delete all, and JSON backup export/import. **New Analysis** resets the workspace without touching saved history.
 
@@ -46,6 +46,26 @@ See `.env.example`. All are optional — without them the app is fully functiona
 - **Backup.** *Export backup* writes a JSON file (`format: "autodyn-analyses"`, `formatVersion: 1`). Import validates the format and version, every record's structure and numbers, and rejects physically invalid inputs; derived fields are recomputed, conflicting IDs are reassigned, existing history is never modified, and imported results are checked against the current engine when opened. Files over 50 MB or 1,000 analyses are refused.
 - Browser storage does not sync across devices and is lost when site data is cleared — export a backup to keep it.
 
+### Automotive relevance gate (quota protection)
+
+Every assistant message passes: request validation → duplicate/rate-limit checks → **local relevance classification** (`src/lib/ai/relevance.ts`, vocabulary in `lexicon.ts`) → Gemini only if allowed → output validation. The gate runs in the browser for instant feedback and, authoritatively, in `POST /api/assistant`, so direct API calls can't spend quota on off-topic text. No second model and no network call is used to classify.
+
+- Weighted evidence: automotive terms, phrases, makes, models, engine/chassis codes, units (hp, lb-ft, psi, rpm…) and typo tolerance for long technical words, against off-topic vocabulary (animals, recipes, essays, weather, finance, programming…).
+- Follow-ups ("What about reliability?", "Explain that again.") are allowed only when they read as follow-ups **and** the recent turns of the same conversation are automotive; an earlier car discussion never authorizes unrelated questions. References to the configured vehicle or results ("explain my results", "this build") are allowed when a vehicle is loaded.
+- Role-change / instruction-override attempts are rejected; ambiguous messages get a local request to name the vehicle or part; greetings/thanks are answered locally.
+- Rejections use the fixed text *"I'm here for cars, parts, and vehicle performance. Ask me something automotive-related."* and are marked *answered locally, no AI request*.
+- **Limitations:** it is a heuristic. Rare slang or model names in a very terse question may be asked to clarify; requests that merely mention a car inside creative/off-topic tasks are rejected; an off-topic question phrased entirely in automotive vocabulary could pass — the Gemini system instruction (automotive scope only, ignore role changes) is the second line of defense.
+
+### Conversations
+
+Stored locally in IndexedDB (stores `chats` and `chatMessages`, separate from saved analyses): ID, title, timestamps, the ordered transcript, the vehicle in context and IDs of saved analyses the chat produced. Saved after every change; the last open conversation reopens on return; its vehicle is only *offered* for loading. Records are schema-validated on read; damaged ones are skipped, never crash the list. No keys, credentials or server instructions are stored.
+
+- **Context sent to Gemini:** only the current conversation's most recent eligible turns — at most 8 messages and 6,000 characters (each ≤ 1,500), excluding locally answered, failed and engine-summary messages. Older turns are not sent and the UI says so; nothing is summarized by AI.
+- **Titles** are generated locally from the user's words and vehicle (e.g. "2015 C300 — +40 hp", "M340i vs C43 AMG"); never by an AI request. Users can rename.
+- Each request carries its conversation ID; a reply that arrives after the user switched chats is filed into its own conversation, never the one on screen. Failed messages stay in the transcript with **Retry**.
+- Deleting a chat (or all chats) never deletes saved analyses, and deleting an analysis shows it as unavailable in the chat.
+- **Privacy:** transcripts live only in this browser, but messages sent to the assistant are processed by Google's Gemini API. The server does not log conversation text.
+
 ### Engineering feasibility
 
 `src/lib/feasibility` classifies each scenario as **Feasible**, **Questionable**, **Non-feasible** or **Insufficient data** from deterministic checks (data provenance, power/torque consistency, specific output, traction bound vs. drive force, grip level, drag area, speed range, acceleration envelope, optional claims and component ratings, model validity range). Non-feasible always names the violated bound (e.g. a claimed 0–60 below the traction-limited minimum, a claimed top speed above the power-limited maximum, torque above a stated driveline rating). Invalid inputs are input errors, never a feasibility status. No AI is involved; the assistant only explains the result.
@@ -71,7 +91,7 @@ Expect `"probe":"generation"` and `"provider":{"status":"ok",...}`. Protected Pr
 
 Vercel attaches environment variables when a deployment is **created**: variables added later never reach existing deployments. Several Vercel projects (`autodyn`, `auto-dyn-performance`, `autodynperformance`) build this repository — the variables must exist on the project that serves the URL being tested, for the **Preview** environment (all branches or `autodyn-v2`), and that branch must be redeployed afterwards.
 
-**Rate-limit tradeoff:** without Upstash the limiter is in-memory per server instance — on Vercel that is best-effort, not global. The real cost guarantee is the billing-free Gemini project (requests beyond the free quota fail with 429, which the app handles).
+**Rate limiting (audited):** 5 requests/min and 40/day per client, 300/day overall (env-configurable), plus duplicate-request IDs, an 800-character message limit, bounded history and context, a 64 KB body limit, a 1,024-token output cap, a 15 s provider timeout and no automatic retries. After a rate-limit or quota response the composer pauses. Without `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` these counters are **in-memory per serverless instance** — best-effort, not a reliable global limit. Upstash's free tier makes them shared; it is never enabled automatically. The real cost guarantee is a Gemini project without billing (requests beyond the free quota fail with 429, which the app reports).
 
 ## Scripts
 

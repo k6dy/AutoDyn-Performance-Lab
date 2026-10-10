@@ -14,6 +14,8 @@ export function Dialog({
   children,
   onClose,
   role = "dialog",
+  variant = "dialog",
+  hideTitle,
 }: {
   open: boolean;
   title: string;
@@ -21,6 +23,9 @@ export function Dialog({
   children: ReactNode;
   onClose: () => void;
   role?: "dialog" | "alertdialog";
+  /** drawer: full-height panel from the left (mobile navigation). */
+  variant?: "dialog" | "drawer";
+  hideTitle?: boolean;
 }) {
   const mounted = useSyncExternalStore(noop, () => true, () => false);
   const panel = useRef<HTMLDivElement>(null);
@@ -59,6 +64,25 @@ export function Dialog({
   }, [open, onClose]);
 
   if (!open || !mounted) return null;
+  if (variant === "drawer") {
+    return createPortal(
+      <div className="no-print fixed inset-0 z-50 flex bg-black/55" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+        <div
+          ref={panel}
+          role={role}
+          aria-modal="true"
+          aria-labelledby={titleId}
+          className="animate-drawer flex h-full w-[min(340px,88vw)] flex-col border-r border-line-strong bg-surface shadow-[12px_0_40px_rgba(0,0,0,0.45)]"
+        >
+          <h2 id={titleId} className={hideTitle ? "sr-only" : "px-4 pt-4 text-[15px] font-semibold tracking-tight text-ink"}>
+            {title}
+          </h2>
+          {children}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
   return createPortal(
     <div className="no-print fixed inset-0 z-50 flex items-end justify-center bg-black/55 p-4 sm:items-center" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div

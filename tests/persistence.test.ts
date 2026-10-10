@@ -79,7 +79,7 @@ describe("IndexedDB repository", () => {
     await r2.put(good);
     // Write garbage directly into the store, as an older/buggy build might have.
     await new Promise<void>((resolve, reject) => {
-      const open = factory.open("autodyn", 1);
+      const open = factory.open("autodyn");
       open.onsuccess = () => {
         const tx = open.result.transaction(["analyses", "payloads"], "readwrite");
         tx.objectStore("analyses").put({ id: "broken0001", title: 42, schema: 1 });

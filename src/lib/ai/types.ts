@@ -1,6 +1,6 @@
 import type { Conditions, ConstraintKey, SpecKey, SpecSet } from "@/lib/domain/types";
 
-export const AI_INTENTS = ["analyze_vehicle", "modify", "compare", "sensitivity", "explain", "assumptions", "clarify", "other"] as const;
+export const AI_INTENTS = ["general", "analyze_vehicle", "modify", "compare", "sensitivity", "explain", "assumptions", "clarify", "other"] as const;
 export type AiIntent = (typeof AI_INTENTS)[number];
 
 export const AI_FIELDS = [
@@ -65,7 +65,10 @@ export type ProviderCode =
   | "invalid_output"
   | "internal_error";
 
-export type AssistantErrorCode = ProviderCode | "rate_limited" | "invalid_request" | "message_too_long" | "duplicate";
+export type AssistantErrorCode = ProviderCode | "rate_limited" | "invalid_request" | "message_too_long" | "duplicate" | "offline";
+
+/** Messages answered by the local relevance gate — no AI provider request was made. */
+export type LocalReplyKind = "off_topic" | "injection" | "clarify" | "small_talk";
 
 export type ProviderHealth = {
   status: "ok" | ProviderCode;
@@ -117,6 +120,7 @@ export const PROVIDER_MESSAGES: Record<AssistantErrorCode, string> = {
   invalid_request: "That request could not be processed.",
   message_too_long: "Messages are limited to 800 characters.",
   duplicate: "This message was already sent.",
+  offline: "You're offline. Your message was kept — retry when you're back online.",
 };
 
 export type AssistantResponse =
@@ -128,6 +132,8 @@ export type AssistantResponse =
       proposal: Proposal | null;
       suggestedAction: SuggestedAction;
       notices: string[];
+      /** Set when the server's relevance gate answered without calling the provider. */
+      local?: LocalReplyKind;
     }
   | { ok: false; requestId?: string; code: AssistantErrorCode; message: string; retryAfterS?: number };
 
@@ -137,6 +143,8 @@ export const AI_LIMITS = {
   maxMessageChars: 800,
   maxHistoryTurns: 8,
   maxHistoryChars: 1500,
+  /** Total characters of conversation history sent with one request. */
+  maxHistoryTotalChars: 6000,
   maxContextChars: 14000,
   maxReplyChars: 2400,
   maxChanges: 8,

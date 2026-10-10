@@ -43,7 +43,8 @@ export const requestSchema = z
     message: z.string().trim().min(1).max(AI_LIMITS.maxMessageChars),
     history: z
       .array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().max(AI_LIMITS.maxHistoryChars) }))
-      .max(AI_LIMITS.maxHistoryTurns),
+      .max(AI_LIMITS.maxHistoryTurns)
+      .refine((h) => h.reduce((n, m) => n + m.text.length, 0) <= AI_LIMITS.maxHistoryTotalChars, "history too long"),
     context: contextSchema,
     /** User asked for a detailed explanation rather than the concise default. */
     detail: z.boolean().optional(),
@@ -89,7 +90,7 @@ export type ModelOutput = z.infer<typeof modelOutputSchema>;
 export const modelOutputJsonSchema = {
   type: "object",
   properties: {
-    intent: { type: "string", enum: [...AI_INTENTS], description: "What the user wants." },
+    intent: { type: "string", enum: [...AI_INTENTS], description: "What the user wants. general = automotive knowledge question that needs no simulation; other = outside automotive scope." },
     reply: { type: "string", description: "Concise plain-text answer (no markdown tables, no HTML)." },
     vehicle: {
       type: "object",

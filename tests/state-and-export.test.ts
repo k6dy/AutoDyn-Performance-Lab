@@ -80,18 +80,18 @@ describe("application state", () => {
 
   it("guards against duplicate chat submissions and stale responses", () => {
     let s = loaded();
-    s = reducer(s, { type: "chatSend", message: { id: "a1", role: "user", text: "one", createdAt: 0 } });
-    const after = reducer(s, { type: "chatSend", message: { id: "a2", role: "user", text: "two", createdAt: 0 } });
+    s = reducer(s, { type: "chatSend", conversationId: "ctest0001", title: null, vehicle: null, message: { id: "a1", role: "user", text: "one", createdAt: 0 } });
+    const after = reducer(s, { type: "chatSend", conversationId: "ctest0001", title: null, vehicle: null, message: { id: "a2", role: "user", text: "two", createdAt: 0 } });
     expect(after.chat.messages).toHaveLength(1);
-    const stale = reducer(s, { type: "chatReceive", requestId: "zzz", proposal: null, message: { id: "x", role: "assistant", text: "late", createdAt: 0 } });
+    const stale = reducer(s, { type: "chatReceive", conversationId: "ctest0001", requestId: "zzz", proposal: null, message: { id: "x", role: "assistant", text: "late", createdAt: 0 } });
     expect(stale).toBe(s);
   });
 
   it("an applied proposal can only be applied once", () => {
     let s = loaded();
-    s = reducer(s, { type: "chatSend", message: { id: "r", role: "user", text: "x", createdAt: 0 } });
+    s = reducer(s, { type: "chatSend", conversationId: "ctest0001", title: null, vehicle: null, message: { id: "r", role: "user", text: "x", createdAt: 0 } });
     const proposal = { id: "p", intent: "modify" as const, vehicle: null, changes: [], rejected: [], view: null, runAfterApply: false };
-    s = reducer(s, { type: "chatReceive", requestId: "r", proposal, message: { id: "m", role: "assistant", text: "", createdAt: 0 } });
+    s = reducer(s, { type: "chatReceive", conversationId: "ctest0001", requestId: "r", proposal, message: { id: "m", role: "assistant", text: "", createdAt: 0 } });
     const cfg = { ...s.config, modified: { overrides: {} } };
     s = reducer(s, { type: "proposalApplied", proposalId: "p", config: cfg, baseline: null, view: null });
     const rev = s.revision;

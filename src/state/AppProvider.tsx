@@ -9,8 +9,25 @@ import { clearDraft, readDraft, readUnitsPref, writeDraft, writeUnitsPref } from
 import { verifyRecord } from "@/lib/persistence/integrity";
 import { getRepository, MemoryRepository, setRepository, STORAGE_MESSAGES, toStorageError, type AnalysisRepository } from "@/lib/persistence/repository";
 import { hasMeaningfulEdits } from "@/lib/persistence/snapshot";
+import { historyFor } from "@/lib/ai/history";
+import { classifyRelevance, localReply } from "@/lib/ai/relevance";
+import { generateTitle, shortVehicle } from "@/lib/ai/titles";
+import {
+  getConversations,
+  MAX_CONVERSATION_MESSAGES,
+  MemoryConversations,
+  newConversationId,
+  setConversations,
+  withDerived,
+  type Conversation,
+  type ConversationRepository,
+  type StoredMessage,
+} from "@/lib/persistence/conversations";
+import { vehicleLabel } from "@/lib/vehicles/normalize";
 import { runAnalysis } from "@/lib/physics/analysis";
-import { initialState, isStale, reducer, type Action, type AppState } from "@/state/reducer";
+import { initialState, isStale, NEW_CHAT_TITLE, reducer, type Action, type AppState, type ChatMessage, type ChatState } from "@/state/reducer";
+
+const ACTIVE_CHAT_KEY = "autodyn:chat:active";
 
 export type AiStatus = {
   /** checking: request in flight · ready: provider verified · untested: configured, not yet probed · unavailable: cannot be used. */
@@ -64,6 +81,19 @@ export type SavedOps = {
   recalculate: () => void;
 };
 
+export type ChatOps = {
+  retry: (messageId: string) => void;
+  discard: (messageId: string) => void;
+  newChat: () => void;
+  open: (id: string) => Promise<OpResult>;
+  rename: (id: string, title: string) => Promise<OpResult>;
+  remove: (id: string) => Promise<OpResult>;
+  clearAll: () => Promise<OpResult>;
+  retrySave: () => void;
+  /** Sending is paused until this time after a rate-limit or quota response. */
+  cooldownUntil: number | null;
+};
+
 type Ctx = {
   state: AppState;
   dispatch: (a: Action) => void;
@@ -74,6 +104,7 @@ type Ctx = {
   checkConnection: () => void;
   sendMessage: (text: string, opts?: { detail?: boolean }) => void;
   saved: SavedOps;
+  chat: ChatOps;
 };
 
 const AppContext = createContext<Ctx | null>(null);
@@ -105,11 +136,73 @@ async function withRepo<T>(fn: (repo: AnalysisRepository) => Promise<T>): Promis
 
 const fail = (e: unknown): OpResult => ({ ok: false, message: toStorageError(e).message });
 
+async function withChats<T>(fn: (repo: ConversationRepository) => Promise<T>): Promise<T> {
+  try {
+    return await fn(getConversations());
+  } catch (e) {
+    const err = toStorageError(e);
+    if (err.code === "unavailable" && getConversations().persistent) {
+      setConversations(new MemoryConversations());
+      return fn(getConversations());
+    }
+    throw err;
+  }
+}
+
+const toStored = (m: ChatMessage): StoredMessage => {
+  const out: StoredMessage = { id: m.id, role: m.role, text: m.text.slice(0, 4000), createdAt: m.createdAt };
+  if (m.kind) out.kind = m.kind;
+  if (m.notices?.length) out.notices = m.notices.slice(0, 10);
+  if (m.followUp) out.followUp = m.followUp;
+  if (m.failed) out.failed = true;
+  if (m.errorCode) out.errorCode = String(m.errorCode).slice(0, 40);
+  if (m.analysisId) out.analysisId = m.analysisId;
+  if (m.proposalNote) out.proposalNote = m.proposalNote;
+  return out;
+};
+
+/** The stored form of the open conversation (null until it has a non-local message). */
+function conversationOf(chat: ChatState): Conversation | null {
+  if (!chat.id || !chat.messages.some((m) => m.kind !== "local")) return null;
+  const last = Math.max(...chat.messages.map((m) => m.createdAt || 0), Date.parse(chat.createdAt ?? "") || 0);
+  return withDerived({
+    id: chat.id,
+    title: chat.title || NEW_CHAT_TITLE,
+    customTitle: chat.customTitle,
+    createdAt: chat.createdAt ?? new Date(last).toISOString(),
+    updatedAt: new Date(last || Date.now()).toISOString(),
+    vehicleLabel: chat.vehicle ? vehicleLabel(chat.vehicle.identity).slice(0, 200) : null,
+    analysisIds: chat.analysisIds,
+    messages: chat.messages.map(toStored),
+    vehicle: chat.vehicle,
+  });
+}
+
+const storage = {
+  get: (k: string) => {
+    try {
+      return window.localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set: (k: string, v: string | null) => {
+    try {
+      if (v == null) window.localStorage.removeItem(k);
+      else window.localStorage.setItem(k, v);
+    } catch {
+      // ignore
+    }
+  },
+};
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [aiStatus, setAiStatus] = useState<AiStatus>({ phase: "checking", code: null, model: null, deployment: null, checkedAt: null });
   const hydrated = useRef(false);
-  const inflight = useRef(false);
+  const inflightChats = useRef(new Set<string>());
+  const chatWrite = useRef<{ pending: Conversation | null; busy: boolean; deleted: Set<string> }>({ pending: null, busy: false, deleted: new Set() });
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const latest = useRef(state);
   const savingRun = useRef<string | null>(null);
 
@@ -124,6 +217,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (units) dispatch({ type: "setUnits", units });
     const draft = readDraft();
     if (draft) dispatch({ type: "offerDraft", draft });
+    // Reopen the conversation that was open last time (its vehicle is only offered, never applied).
+    const lastChat = storage.get(ACTIVE_CHAT_KEY);
+    if (lastChat) {
+      withChats((repo) => repo.get(lastChat))
+        .then((conversation) => {
+          if (!latest.current.chat.id && !latest.current.chat.messages.length) dispatch({ type: "chatOpen", conversation });
+        })
+        .catch(() => storage.set(ACTIVE_CHAT_KEY, null));
+    }
     hydrated.current = true;
   }, []);
 
@@ -134,23 +236,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Autosave the working configuration (separately from completed analyses).
   const { config, baseline, draftOffer } = state;
   const activeId = state.saved.active?.id ?? null;
-  const messages = state.chat.messages;
   useEffect(() => {
     if (!hydrated.current || draftOffer) return; // never overwrite a session the user hasn't answered yet
     const t = window.setTimeout(() => {
       if (!config.stock) return clearDraft();
-      writeDraft({
-        config,
-        baseline,
-        activeId,
-        messages: messages
-          .filter((m) => !m.errorCode)
-          .slice(-40)
-          .map((m) => ({ id: m.id, role: m.role, text: m.text, createdAt: m.createdAt, notices: m.notices })),
-      });
+      // Conversations are stored separately (IndexedDB), not in the draft.
+      writeDraft({ config, baseline, activeId, messages: [] });
     }, 300);
     return () => window.clearTimeout(t);
-  }, [config, baseline, activeId, messages, draftOffer]);
+  }, [config, baseline, activeId, draftOffer]);
+
+  // Persist the open conversation after every meaningful change. Writes are coalesced so only the
+  // newest snapshot is written, and a conversation deleted meanwhile is never resurrected.
+  const flushChat = useCallback(async () => {
+    const w = chatWrite.current;
+    if (w.busy) return;
+    w.busy = true;
+    while (w.pending) {
+      const c = w.pending;
+      w.pending = null;
+      if (w.deleted.has(c.id)) continue;
+      try {
+        await withChats((repo) => repo.put(c));
+        if (w.deleted.has(c.id)) await withChats((repo) => repo.delete(c.id));
+        dispatch({ type: "chatStored", id: c.id, status: getConversations().persistent ? "saved" : "memory" });
+      } catch (e) {
+        dispatch({ type: "chatStored", id: c.id, status: "error", message: toStorageError(e).message });
+      }
+    }
+    w.busy = false;
+  }, []);
+
+  // Only transcript-relevant fields: storage acknowledgements must not trigger another write.
+  const { id: cId, title: cTitle, customTitle: cCustom, createdAt: cCreated, vehicle: cVehicle, analysisIds: cAnalyses, messages: cMessages } = state.chat;
+  const record = useMemo(
+    () => conversationOf({ ...initialState.chat, id: cId, title: cTitle, customTitle: cCustom, createdAt: cCreated, vehicle: cVehicle, analysisIds: cAnalyses, messages: cMessages }),
+    [cId, cTitle, cCustom, cCreated, cVehicle, cAnalyses, cMessages],
+  );
+  useEffect(() => {
+    if (!record) return;
+    chatWrite.current.pending = record;
+    void flushChat();
+  }, [record, flushChat]);
+
+  const chatId = record?.id ?? null;
+  useEffect(() => {
+    if (hydrated.current) storage.set(ACTIVE_CHAT_KEY, chatId);
+  }, [chatId]);
 
   // Preserve every completed run automatically (see persistence/autosave for the rules).
   const persist = useCallback(async () => {
@@ -186,7 +318,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!d) return;
         let record = null;
         if (d.activeId) record = await withRepo((repo) => repo.get(d.activeId!)).catch(() => null);
-        dispatch({ type: "continueDraft", record });
+        dispatch({ type: "continueDraft", record, conversationId: newConversationId() });
       },
       discardDraft: () => {
         clearDraft();
@@ -285,71 +417,167 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(t);
   }, [runRequest, config]);
 
-  const sendMessage = useCallback((text: string, opts?: { detail?: boolean }) => {
-    const s = state;
-    const message = text.trim();
-    if (!message || s.chat.pending || inflight.current || message.length > AI_LIMITS.maxMessageChars) return;
-    inflight.current = true;
-    const id = newId();
-    dispatch({ type: "chatSend", message: { id, role: "user", text: message, createdAt: Date.now() } });
-
-    const history = s.chat.messages
-      .filter((m) => !m.errorCode)
-      .slice(-AI_LIMITS.maxHistoryTurns)
-      .map((m) => ({ role: m.role, text: m.text.slice(0, AI_LIMITS.maxHistoryChars) }));
-    const context = buildAssistantContext(s.config, s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null, s.ui.units);
-
-    const finish = (body: AssistantResponse) => {
-      inflight.current = false;
-      if (body.ok) {
-        setAiStatus((st) => ({ ...st, phase: "ready", code: null, checkedAt: new Date().toISOString() }));
-        dispatch({
-          type: "chatReceive",
-          requestId: id,
-          proposal: body.proposal,
-          message: {
-            id: `a-${id}`,
-            role: "assistant",
-            text: body.reply,
-            createdAt: Date.now(),
-            proposalId: body.proposal?.id,
-            notices: body.notices,
-            followUp: body.followUpQuestion,
-            suggestedAction: body.suggestedAction,
-          },
-        });
-      } else {
-        dispatch({
-          type: "chatReceive",
-          requestId: id,
-          proposal: null,
-          message: { id: `a-${id}`, role: "assistant", text: body.message, createdAt: Date.now(), errorCode: body.code },
-        });
-        if ((PROVIDER_CODES as string[]).includes(body.code) && body.code !== "invalid_output") {
-          const code = body.code as ProviderCode;
-          setAiStatus((st) => ({ ...st, phase: isBlocking(code) ? "unavailable" : "degraded", code, checkedAt: new Date().toISOString() }));
-        }
+  /** Delivers a provider response to its own conversation only — never to whichever chat is open. */
+  const deliver = useCallback((conversationId: string, userMessageId: string, requestId: string, body: AssistantResponse) => {
+    inflightChats.current.delete(conversationId);
+    const s = latest.current;
+    const current = s.chat.id === conversationId;
+    if (body.ok) {
+      if (!body.local) setAiStatus((st) => ({ ...st, phase: "ready", code: null, checkedAt: new Date().toISOString() }));
+      const message: ChatMessage = {
+        id: `a-${requestId}`,
+        role: "assistant",
+        text: body.reply,
+        createdAt: Date.now(),
+        proposalId: body.proposal?.id,
+        notices: body.notices,
+        followUp: body.followUpQuestion,
+        suggestedAction: body.suggestedAction,
+        ...(body.local ? { kind: "local" as const } : {}),
+      };
+      if (current && s.chat.pending === requestId) dispatch({ type: "chatReceive", requestId, conversationId, proposal: body.proposal, message });
+      else if (current && !s.chat.pending) dispatch({ type: "chatLate", conversationId, userMessageId, message: { ...message, proposalId: undefined, suggestedAction: null } });
+      else if (!current && !chatWrite.current.deleted.has(conversationId)) {
+        // The user switched chats while waiting: file the answer in its own conversation.
+        void withChats((repo) => repo.append(conversationId, toStored({ ...message, proposalId: undefined })))
+          .then(() => dispatch({ type: "chatStored", id: conversationId, status: "saved" }))
+          .catch(() => undefined);
       }
-    };
+      return;
+    }
+    if (body.code === "rate_limited" || body.code === "provider_rate_limited") setCooldownUntil(Date.now() + Math.min(body.retryAfterS ?? 30, 300) * 1000);
+    if (body.code === "quota") setCooldownUntil(Date.now() + 10 * 60_000);
+    if (current && s.chat.pending === requestId) dispatch({ type: "chatFailed", requestId, conversationId, messageId: userMessageId, code: body.code });
+    if ((PROVIDER_CODES as string[]).includes(body.code) && body.code !== "invalid_output") {
+      const code = body.code as ProviderCode;
+      setAiStatus((st) => ({ ...st, phase: isBlocking(code) ? "unavailable" : "degraded", code, checkedAt: new Date().toISOString() }));
+    }
+  }, []);
 
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 30000);
-    fetch("/api/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId: id, message, history, context, detail: !!opts?.detail }),
-      signal: controller.signal,
-    })
-      .then(async (r) => {
-        const body = (await r.json().catch(() => null)) as AssistantResponse | null;
-        finish(body && typeof body === "object" && "ok" in body ? body : { ok: false, code: "server_error", message: PROVIDER_MESSAGES.server_error });
+  const request = useCallback(
+    (conversationId: string, userMessage: ChatMessage, history: { role: "user" | "assistant"; text: string }[], requestId: string, detail: boolean) => {
+      const fails = (code: AssistantErrorCode) => deliver(conversationId, userMessage.id, requestId, { ok: false, code, message: PROVIDER_MESSAGES[code] });
+      if (cooldownUntil && Date.now() < cooldownUntil) return fails("rate_limited");
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return fails("offline");
+      inflightChats.current.add(conversationId);
+      const s = latest.current;
+      const context = buildAssistantContext(s.config, s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null, s.ui.units);
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 30000);
+      fetch("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, message: userMessage.text, history, context, detail }),
+        signal: controller.signal,
       })
-      .catch(() => {
-        const code: AssistantErrorCode = controller.signal.aborted ? "timeout" : "network";
-        finish({ ok: false, code, message: PROVIDER_MESSAGES[code] });
-      })
-      .finally(() => window.clearTimeout(timer));
-  }, [state]);
+        .then(async (r) => {
+          const body = (await r.json().catch(() => null)) as AssistantResponse | null;
+          deliver(conversationId, userMessage.id, requestId, body && typeof body === "object" && "ok" in body ? body : { ok: false, code: "server_error", message: PROVIDER_MESSAGES.server_error });
+        })
+        .catch(() => {
+          const code: AssistantErrorCode = controller.signal.aborted ? "timeout" : "network";
+          deliver(conversationId, userMessage.id, requestId, { ok: false, code, message: PROVIDER_MESSAGES[code] });
+        })
+        .finally(() => window.clearTimeout(timer));
+    },
+    [deliver, cooldownUntil],
+  );
+
+  const sendMessage = useCallback(
+    (text: string, opts?: { detail?: boolean }) => {
+      const s = latest.current;
+      const message = text.trim();
+      if (!message || s.chat.pending || message.length > AI_LIMITS.maxMessageChars || s.chat.messages.length >= MAX_CONVERSATION_MESSAGES - 2) return;
+      const conversationId = s.chat.id ?? newConversationId();
+      if (inflightChats.current.has(conversationId)) return; // rapid repeat submission
+      const now = Date.now();
+      const userMessage: ChatMessage = { id: newId(), role: "user", text: message, createdAt: now };
+      const vehicle = s.config.stock;
+      const history = historyFor(s.chat.messages);
+
+      // Local automotive relevance gate: off-topic, injection, small talk and ambiguous messages are
+      // answered here without any network request (the server enforces the same gate).
+      const relevance = classifyRelevance(message, { history, hasVehicle: !!vehicle, hasResults: !!s.result });
+      if (relevance.decision !== "allow") {
+        dispatch({ type: "chatLocal", conversationId, vehicle, message: userMessage, reply: { id: `l-${userMessage.id}`, role: "assistant", text: localReply(relevance)!, createdAt: now } });
+        return;
+      }
+      const userTexts = [...s.chat.messages.filter((m) => m.role === "user" && m.kind !== "local").map((m) => m.text), message];
+      const title = s.chat.customTitle || s.chat.title !== NEW_CHAT_TITLE ? null : generateTitle(userTexts, shortVehicle(vehicle?.identity ?? s.chat.vehicle?.identity ?? null));
+      dispatch({ type: "chatSend", conversationId, title, vehicle, message: userMessage });
+      request(conversationId, userMessage, history, userMessage.id, !!opts?.detail);
+    },
+    [request],
+  );
+
+  const chatOps = useMemo<ChatOps>(
+    () => ({
+      cooldownUntil,
+      retry: (messageId) => {
+        const s = latest.current;
+        const i = s.chat.messages.findIndex((m) => m.id === messageId && m.failed);
+        if (i < 0 || !s.chat.id || s.chat.pending || inflightChats.current.has(s.chat.id)) return;
+        const m = s.chat.messages[i];
+        const requestId = `${m.id.slice(0, 40)}r${Date.now().toString(36)}`;
+        dispatch({ type: "chatRetry", messageId, requestId });
+        request(s.chat.id, m, historyFor(s.chat.messages.slice(0, i)), requestId, false);
+      },
+      discard: (messageId) => dispatch({ type: "chatDiscard", messageId }),
+      newChat: () => dispatch({ type: "chatNew" }),
+      open: async (id) => {
+        if (latest.current.chat.id === id) return { ok: true };
+        try {
+          const conversation = await withChats((repo) => repo.get(id));
+          dispatch({ type: "chatOpen", conversation });
+          return { ok: true };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+      rename: async (id, title) => {
+        const clean = title.replace(/\s+/g, " ").trim().slice(0, 120);
+        if (!clean) return { ok: false, message: "Enter a title." };
+        try {
+          if (latest.current.chat.id !== id || !conversationOf(latest.current.chat)) await withChats((repo) => repo.rename(id, clean));
+          dispatch({ type: "chatRenamed", id, title: clean });
+          return { ok: true };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+      remove: async (id) => {
+        try {
+          chatWrite.current.deleted.add(id);
+          await withChats((repo) => repo.delete(id));
+          dispatch({ type: "chatDeleted", ids: [id] });
+          return { ok: true };
+        } catch (e) {
+          chatWrite.current.deleted.delete(id);
+          return fail(e);
+        }
+      },
+      clearAll: async () => {
+        try {
+          const { items } = await withChats((repo) => repo.list());
+          for (const m of items) chatWrite.current.deleted.add(m.id);
+          if (latest.current.chat.id) chatWrite.current.deleted.add(latest.current.chat.id);
+          chatWrite.current.pending = null;
+          await withChats((repo) => repo.clear());
+          dispatch({ type: "chatDeleted", ids: "all" });
+          return { ok: true };
+        } catch (e) {
+          return fail(e);
+        }
+      },
+      retrySave: () => {
+        const c = conversationOf(latest.current.chat);
+        if (!c) return;
+        chatWrite.current.pending = c;
+        void flushChat();
+      },
+    }),
+    [cooldownUntil, request, flushChat],
+  );
 
   const value = useMemo<Ctx>(
     () => ({
@@ -362,8 +590,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       checkConnection,
       sendMessage,
       saved: { ...saved, unsavedEdits },
+      chat: chatOps,
     }),
-    [state, runAnalysisNow, aiStatus, checkConnection, sendMessage, saved, unsavedEdits],
+    [state, runAnalysisNow, aiStatus, checkConnection, sendMessage, saved, unsavedEdits, chatOps],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

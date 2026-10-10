@@ -1,27 +1,24 @@
 "use client";
 
-import { ArrowUp, Gauge, Play, PlugZap, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Archive, ArrowUp, CarFront, Cog, Gauge, History, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, Pencil, Play, PlugZap, RotateCcw, Scale, SlidersHorizontal } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import ChatHistory from "@/components/assistant/ChatHistory";
 import ProposalPanel from "@/components/assistant/ProposalPanel";
+import { ConfirmDialog, Dialog, PromptDialog } from "@/components/Dialog";
 import LoadingStage, { BrandGlyph } from "@/components/LoadingStage";
 import { Button, cx, Kbd, Panel, ProvenanceTag, Spinner } from "@/components/ui";
 import { displaySpec } from "@/lib/ai/context";
+import { omittedCount } from "@/lib/ai/history";
 import { AI_LIMITS, AI_UNAVAILABLE_MESSAGE, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { SPEC_LABEL } from "@/lib/domain/fields";
 import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
 import type { SpecKey } from "@/lib/domain/types";
+import { MAX_CONVERSATION_MESSAGES } from "@/lib/persistence/conversations";
+import { getRepository } from "@/lib/persistence/repository";
+import { vehicleKey } from "@/lib/persistence/snapshot";
 import { vehicleLabel } from "@/lib/vehicles/normalize";
 import { useApp, type AiStatus } from "@/state/AppProvider";
 import type { ChatMessage, ProposalState } from "@/state/reducer";
-
-const EXAMPLES = [
-  "Compare a stock 2015 Mercedes-Benz C300 with 40 extra horsepower.",
-  "Analyze a stock 2018 Ford Mustang GT.",
-  "What would change if this car weighed 150 pounds less?",
-  "Compare the effects of additional power versus reduced weight.",
-  "Which assumptions have the biggest impact on the result?",
-  "Explain why the modified version accelerates differently.",
-];
 
 const PROBED_KEY = "autodyn:ai-probed";
 
@@ -145,20 +142,41 @@ function ConnectionBar() {
 }
 
 function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) {
-  const { dispatch, runAnalysisNow, running, sendMessage, state, aiStatus } = useApp();
+  const { dispatch, runAnalysisNow, running, sendMessage, state, aiStatus, chat, saved } = useApp();
+  const [linkState, setLinkState] = useState<"idle" | "opening" | "missing">("idle");
+  const [confirmOpen, setConfirmOpen] = useState(false);
   if (m.role === "user") {
     return (
-      <div className="animate-enter flex justify-end">
-        <div className="max-w-[85%] rounded-lg border border-line bg-raised px-3.5 py-2.5 text-[14px] leading-6 whitespace-pre-line text-ink [overflow-wrap:anywhere]">{m.text}</div>
+      <div className="animate-enter flex flex-col items-end gap-1.5" data-message-role="user">
+        <div className={cx("max-w-[85%] rounded-lg border bg-raised px-3.5 py-2.5 text-[14px] leading-6 whitespace-pre-line text-ink [overflow-wrap:anywhere]", m.failed ? "border-error/40" : "border-line")}>{m.text}</div>
+        {m.failed && (
+          <div className="flex max-w-[85%] flex-wrap items-center justify-end gap-2 text-xs" role="alert">
+            <span className="text-error">Not sent: {PROVIDER_MESSAGES[m.errorCode as keyof typeof PROVIDER_MESSAGES] ?? "The request didn't complete."}</span>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => chat.retry(m.id)} disabled={!!state.chat.pending}>
+              <RotateCcw size={12} aria-hidden /> Retry
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => chat.discard(m.id)}>
+              Remove
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
   const canAsk = !state.chat.pending && !isBlocking(aiStatus.code ?? undefined);
+  const openLinked = async () => {
+    if (!m.analysisId) return;
+    setConfirmOpen(false);
+    setLinkState("opening");
+    const r = await saved.open(m.analysisId);
+    setLinkState(r.ok ? "idle" : "missing");
+  };
   return (
-    <div className="animate-enter max-w-[92%] space-y-2">
-      <div className="flex items-center gap-2 text-[11px] font-medium tracking-wide text-faint uppercase">
+    <div className="animate-enter max-w-[92%] space-y-2" data-message-role="assistant">
+      <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium tracking-wide text-faint uppercase">
         {m.kind === "results" ? "Physics engine" : "AutoDyn assistant"}
         {m.kind === "results" && <ProvenanceTag provenance="verified" title="Computed deterministically — not AI-generated" />}
+        {m.kind === "local" && <span className="font-normal tracking-normal normal-case">· answered locally, no AI request</span>}
       </div>
       <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f5a8a8]" : "text-ink", m.kind === "results" && "num text-[13px]")}>
         <PlainText text={m.text} />
@@ -185,17 +203,36 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
             <Gauge size={14} aria-hidden /> View results
           </Button>
         )}
+        {m.analysisId &&
+          (linkState === "missing" ? (
+            <span className="text-xs text-faint">The linked saved analysis is no longer available.</span>
+          ) : (
+            <Button size="sm" onClick={() => (saved.unsavedEdits ? setConfirmOpen(true) : void openLinked())} disabled={linkState === "opening"}>
+              <Archive size={14} aria-hidden /> Open saved analysis
+            </Button>
+          ))}
         {m.kind === "results" && canAsk && (
           <Button size="sm" variant="ghost" onClick={() => sendMessage("Explain the calculated differences and what limits the result.", { detail: true })}>
             Explain in detail
           </Button>
         )}
       </div>
-      {proposal && (
+      {proposal ? (
         <div className="lg:hidden">
           <ProposalPanel ps={proposal} />
         </div>
+      ) : (
+        m.proposalNote && <p className="text-xs leading-4 text-faint">{m.proposalNote}</p>
       )}
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Open the linked analysis?"
+        description="Your workspace has changes that haven't been run and saved. Opening this analysis replaces them. Saved analyses are not affected."
+        confirmLabel="Discard and open"
+        tone="primary"
+        onConfirm={() => void openLinked()}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 }
@@ -269,15 +306,183 @@ function CurrentConfig() {
   );
 }
 
+/** Saved analyses this conversation produced (by ID); deleted ones show as unavailable. */
+function LinkedAnalyses() {
+  const { state, saved } = useApp();
+  const ids = state.chat.analysisIds;
+  const [titles, setTitles] = useState<Record<string, string | null>>({});
+  const [confirm, setConfirm] = useState<string | null>(null);
+  const key = `${ids.join(",")}|${state.saved.listRevision}`;
+  useEffect(() => {
+    if (!ids.length) return;
+    let cancelled = false;
+    getRepository()
+      .list()
+      .then(
+        ({ items }) => !cancelled && setTitles(Object.fromEntries(ids.map((id) => [id, items.find((m) => m.id === id)?.title ?? null]))),
+        () => undefined,
+      );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- key covers ids and list changes
+  }, [key]);
+  if (!ids.length) return null;
+  return (
+    <Panel title="Linked analyses" subtitle="Saved analyses produced in this conversation.">
+      <ul className="space-y-2 text-[13px]">
+        {ids.map((id) => (
+          <li key={id} className="flex items-center justify-between gap-2">
+            {titles[id] === null ? (
+              <span className="text-faint">Deleted analysis (no longer available)</span>
+            ) : (
+              <>
+                <span className="min-w-0 truncate text-ink">{titles[id] ?? "Saved analysis"}</span>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => (saved.unsavedEdits ? setConfirm(id) : void saved.open(id))}>
+                  Open
+                </Button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      <ConfirmDialog
+        open={!!confirm}
+        title="Open the linked analysis?"
+        description="Your workspace has changes that haven't been run and saved. Opening this analysis replaces them."
+        confirmLabel="Discard and open"
+        tone="primary"
+        onConfirm={() => {
+          if (confirm) void saved.open(confirm);
+          setConfirm(null);
+        }}
+        onCancel={() => setConfirm(null)}
+      />
+    </Panel>
+  );
+}
+
+/** A reopened chat about another vehicle: offer — never force — loading that vehicle. */
+function ChatVehicleNotice() {
+  const { state, dispatch, saved } = useApp();
+  const [confirm, setConfirm] = useState(false);
+  const v = state.chat.vehicle;
+  const current = state.config.stock;
+  if (!state.chat.restored || !v || (current && vehicleKey(current.identity) === vehicleKey(v.identity))) return null;
+  const load = () => {
+    setConfirm(false);
+    dispatch({ type: "loadVehicle", specSet: v });
+  };
+  return (
+    <div className="animate-fade flex flex-wrap items-center justify-between gap-2 border-b border-line bg-raised/50 px-4 py-2 text-xs text-muted sm:px-5" data-testid="chat-vehicle-notice">
+      <span className="min-w-0">
+        This chat was about <span className="text-ink">{vehicleLabel(v.identity)}</span>. {current ? `Your workspace has the ${vehicleLabel(current.identity)}.` : "No vehicle is loaded."}
+      </span>
+      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-accent" onClick={() => (saved.unsavedEdits ? setConfirm(true) : load())}>
+        Load this vehicle
+      </Button>
+      <ConfirmDialog
+        open={confirm}
+        title="Replace the current vehicle?"
+        description="Loading this chat's vehicle replaces your current configuration and its unsaved changes. Saved analyses are not affected."
+        confirmLabel="Load vehicle"
+        tone="primary"
+        onConfirm={load}
+        onCancel={() => setConfirm(false)}
+      />
+    </div>
+  );
+}
+
+const SUGGESTIONS: { category: string; text: string; icon: typeof Gauge; needsVehicle?: boolean }[] = [
+  { category: "Vehicle comparisons", text: "Compare a C300 and M340i.", icon: Scale },
+  { category: "Parts & mechanics", text: "How does a turbocharger work?", icon: Cog },
+  { category: "Performance analysis", text: "How does losing 200 lb affect acceleration?", icon: Gauge },
+  { category: "Current vehicle", text: "What are the biggest limitations of this build?", icon: CarFront, needsVehicle: true },
+];
+
+function ChatHeader({ onHistory, sidebarOpen, onRename }: { onHistory: (inline: boolean) => void; sidebarOpen: boolean; onRename: () => void }) {
+  const { state, chat } = useApp();
+  const c = state.chat;
+  return (
+    <div className="flex items-center gap-2 border-b border-line px-3 py-2 sm:px-4">
+      <Button size="sm" variant="ghost" className="h-8 px-2 xl:hidden" onClick={() => onHistory(false)} aria-label="Open chat history">
+        <History size={16} aria-hidden /> <span className="hidden sm:inline">History</span>
+      </Button>
+      {!sidebarOpen && (
+        <Button size="sm" variant="ghost" className="hidden h-8 px-2 xl:inline-flex" onClick={() => onHistory(true)} aria-label="Show chat history">
+          <PanelLeftOpen size={16} aria-hidden />
+        </Button>
+      )}
+      <div className="min-w-0 flex-1">
+        {c.id && c.messages.some((m) => m.kind !== "local") ? (
+          <button type="button" onClick={onRename} className="group flex max-w-full items-center gap-1.5 rounded-sm text-left" aria-label={`Rename conversation: ${c.title}`}>
+            <span key={c.id} className="animate-fade truncate text-[14px] font-medium text-ink">
+              {c.title}
+            </span>
+            <Pencil size={12} aria-hidden className="shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          </button>
+        ) : (
+          <span className="text-[14px] font-medium text-muted">New conversation</span>
+        )}
+        {c.storage.status === "error" ? (
+          <span className="flex items-center gap-1.5 text-[11px] text-error" role="alert">
+            Not saved: {c.storage.message}
+            <button type="button" className="underline underline-offset-2" onClick={chat.retrySave}>
+              Retry
+            </button>
+          </span>
+        ) : c.storage.status === "memory" ? (
+          <span className="text-[11px] text-warning">Browser storage unavailable — this chat is kept only until the tab closes.</span>
+        ) : null}
+      </div>
+      <Button size="sm" variant="ghost" className="h-8 shrink-0 px-2" onClick={chat.newChat} disabled={!c.messages.length} aria-label="New chat">
+        <MessageSquarePlus size={16} aria-hidden /> <span className="hidden sm:inline">New chat</span>
+      </Button>
+    </div>
+  );
+}
+
+const SIDEBAR_KEY = "autodyn:chat:sidebar";
+const subscribeNone = () => () => {};
+
 export default function AssistantWorkspace() {
-  const { state, dispatch, aiStatus, sendMessage, checkConnection, running } = useApp();
+  const { state, aiStatus, sendMessage, checkConnection, running, chat } = useApp();
   const [text, setText] = useState("");
+  const [drawer, setDrawer] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [sidebarPref, setSidebarPref] = useState<boolean | null>(null);
+  const storedPref = useSyncExternalStore(
+    subscribeNone,
+    () => {
+      try {
+        return window.localStorage.getItem(SIDEBAR_KEY);
+      } catch {
+        return null;
+      }
+    },
+    () => null,
+  );
+  const sidebarOpen = sidebarPref ?? storedPref !== "closed";
+  const setSidebar = (open: boolean) => {
+    setSidebarPref(open);
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, open ? "open" : "closed");
+    } catch {
+      // ignore
+    }
+  };
+  const [now, setNow] = useState(() => Date.now());
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const { messages, pending, proposals } = state.chat;
   const blocked = aiStatus.phase === "unavailable" || (aiStatus.phase === "checking" && !aiStatus.deployment);
+  const cooling = !!chat.cooldownUntil && chat.cooldownUntil > now;
+  const full = messages.length >= MAX_CONVERSATION_MESSAGES - 2;
   const active = Object.values(proposals).find((p) => p.status === "pending") ?? null;
   const lastProposal = active ?? Object.values(proposals).at(-1) ?? null;
   const make = state.config.stock?.identity.make ?? null;
+  const omitted = omittedCount(messages);
 
   // Verify the live provider once per browser session when the assistant is first opened.
   useEffect(() => {
@@ -292,54 +497,83 @@ export default function AssistantWorkspace() {
   }, [aiStatus.phase, checkConnection]);
 
   useEffect(() => {
+    if (!chat.cooldownUntil) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [chat.cooldownUntil]);
+
+  useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages.length, pending, running]);
+  }, [messages.length, pending, running, state.chat.view]);
 
   const submit = () => {
-    if (!text.trim() || pending || blocked || text.length > AI_LIMITS.maxMessageChars) return;
+    if (!text.trim() || pending || blocked || cooling || full || text.length > AI_LIMITS.maxMessageChars) return;
     sendMessage(text);
     setText("");
   };
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+    <div className={cx("grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]", sidebarOpen && "xl:grid-cols-[240px_minmax(0,1fr)_340px]")}>
+      {sidebarOpen && (
+        <aside className="animate-fade hidden min-h-0 flex-col rounded-lg border border-line bg-surface xl:sticky xl:top-[132px] xl:flex xl:h-[calc(100dvh-200px)] xl:self-start" aria-label="Chat history">
+          <div className="flex items-center justify-between border-b border-line px-3 py-2">
+            <h2 className="text-[13px] font-semibold tracking-tight">Chat history</h2>
+            <Button size="sm" variant="ghost" className="h-7 w-7 px-0" onClick={() => setSidebar(false)} aria-label="Hide chat history">
+              <PanelLeftClose size={15} aria-hidden />
+            </Button>
+          </div>
+          <ChatHistory />
+        </aside>
+      )}
+      <Dialog open={drawer} title="Chat history" onClose={() => setDrawer(false)} variant="drawer">
+        <ChatHistory onNavigate={() => setDrawer(false)} />
+      </Dialog>
+
       <div className="flex min-h-[520px] min-w-0 flex-col rounded-lg border border-line bg-surface lg:h-[calc(100dvh-200px)]">
         <ConnectionBar />
-        <div className="flex items-center justify-between gap-2 px-4 pt-2 sm:px-5">
-          <span className="text-xs text-faint">The assistant interprets and explains · the physics engine computes every number</span>
-          {messages.length > 0 && (
-            <Button size="sm" variant="ghost" onClick={() => dispatch({ type: "chatClear" })} disabled={!!pending}>
-              <Trash2 size={14} aria-hidden /> Clear
-            </Button>
-          )}
-        </div>
+        <ChatHeader onHistory={(inline) => (inline ? setSidebar(true) : setDrawer(true))} sidebarOpen={sidebarOpen} onRename={() => setRenaming(true)} />
+        <ChatVehicleNotice />
 
-        <div ref={listRef} className="scrollbar-thin flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-5" aria-live="polite">
+        <div ref={listRef} key={state.chat.view} className="animate-fade scrollbar-thin flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-5" aria-live="polite" data-testid="chat-log">
           {messages.length === 0 ? (
-            <div className="mx-auto max-w-xl py-4">
-              <h2 className="text-[15px] font-semibold">Describe a vehicle or a build</h2>
+            <div className="mx-auto max-w-xl py-2">
+              <h2 className="text-[15px] font-semibold">Ask about cars, parts or your build</h2>
               <p className="mt-1 text-[13px] leading-5 text-muted">
-                The assistant finds vehicles in AutoDyn&apos;s data, turns your request into changes you review and approve, and explains computed results. It never invents
-                specifications or performance numbers.
+                Automotive questions get a direct answer. For analyses, the assistant finds vehicles in AutoDyn&apos;s data and turns your request into changes you review and approve —
+                the physics engine computes every number.
               </p>
+              {state.config.stock && <p className="mt-2 text-xs text-faint">Active vehicle: {vehicleLabel(state.config.stock.identity)} — a new chat keeps your current configuration.</p>}
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                {EXAMPLES.map((e) => (
-                  <button
-                    key={e}
-                    type="button"
-                    disabled={blocked || !!pending}
-                    onClick={() => sendMessage(e)}
-                    className="rounded-md border border-line px-3 py-2.5 text-left text-[13px] leading-5 text-muted transition-colors hover:border-line-strong hover:bg-raised hover:text-ink disabled:opacity-40"
-                  >
-                    {e}
-                  </button>
-                ))}
+                {SUGGESTIONS.filter((s) => !s.needsVehicle || state.config.stock).map((s) => {
+                  const Icon = s.icon;
+                  return (
+                    <button
+                      key={s.text}
+                      type="button"
+                      disabled={blocked}
+                      onClick={() => {
+                        setText(s.text);
+                        inputRef.current?.focus();
+                      }}
+                      className="group rounded-md border border-line px-3 py-2.5 text-left transition-colors hover:border-line-strong hover:bg-raised disabled:opacity-40"
+                    >
+                      <span className="flex items-center gap-1.5 text-[11px] font-medium tracking-wide text-faint uppercase">
+                        <Icon size={13} aria-hidden className="text-accent" /> {s.category}
+                      </span>
+                      <span className="mt-1 block text-[13px] leading-5 text-muted group-hover:text-ink">{s.text}</span>
+                    </button>
+                  );
+                })}
               </div>
+              <p className="mt-4 text-[11.5px] leading-4 text-faint">
+                The assistant only discusses automotive topics; other questions are answered locally without using the AI. Chats are saved in this browser; messages you send are
+                processed by Google Gemini.
+              </p>
             </div>
           ) : (
             messages.map((m) => <Message key={m.id} m={m} proposal={m.proposalId ? proposals[m.proposalId] : undefined} />)
           )}
-          {pending && <LoadingStage make={make} label="Interpreting your request" compact />}
+          {pending && <LoadingStage make={make} label="Thinking about your question" compact />}
           {running && !pending && <LoadingStage make={make} label="Running the physics simulation" compact />}
         </div>
 
@@ -350,17 +584,27 @@ export default function AssistantWorkspace() {
             submit();
           }}
         >
+          {(cooling || full) && (
+            <p className="mb-2 text-xs text-warning" role="status">
+              {full
+                ? "This conversation has reached its length limit. Start a new chat to continue."
+                : `Paused after a rate limit — you can send again in ${Math.ceil((chat.cooldownUntil! - now) / 1000)} s.`}
+            </p>
+          )}
           <label htmlFor="chat-input" className="sr-only">
             Message the AI Build Assistant
           </label>
           <div className="flex items-end gap-2 rounded-md border border-line bg-bg px-3 py-2 focus-within:border-accent">
             <textarea
               id="chat-input"
+              ref={inputRef}
               rows={1}
               value={text}
               maxLength={AI_LIMITS.maxMessageChars + 200}
-              disabled={blocked}
-              placeholder={blocked ? "Assistant unavailable — use Manual Setup" : state.config.stock ? `Ask about the ${state.config.stock.identity.model}, or describe a change…` : "e.g. Compare a stock 2015 C300 with 40 more hp"}
+              disabled={blocked || full}
+              placeholder={
+                blocked ? "Assistant unavailable — use Manual Setup" : state.config.stock ? `Ask about the ${state.config.stock.identity.model}, a part, or a change…` : "Ask about a car, a part, or a build…"
+              }
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -376,15 +620,16 @@ export default function AssistantWorkspace() {
               size="sm"
               className="h-9 w-9 px-0"
               aria-label="Send message"
-              disabled={!text.trim() || !!pending || blocked || text.length > AI_LIMITS.maxMessageChars}
+              disabled={!text.trim() || !!pending || blocked || cooling || full || text.length > AI_LIMITS.maxMessageChars}
             >
               <ArrowUp size={16} aria-hidden />
             </Button>
           </div>
-          <div className="mt-1.5 flex justify-between text-[11px] text-faint">
+          <div className="mt-1.5 flex flex-wrap justify-between gap-x-3 text-[11px] text-faint">
             <span className="hidden sm:inline">
               <Kbd>Enter</Kbd> send · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line
             </span>
+            {omitted > 0 && <span>The assistant sees the latest messages only ({omitted} earlier not sent).</span>}
             <span className={cx("num ml-auto", text.length > AI_LIMITS.maxMessageChars && "text-error")}>
               {text.length}/{AI_LIMITS.maxMessageChars}
             </span>
@@ -399,7 +644,21 @@ export default function AssistantWorkspace() {
           </div>
         )}
         <CurrentConfig />
+        <LinkedAnalyses />
       </aside>
+
+      <PromptDialog
+        open={renaming}
+        title="Rename conversation"
+        label="Conversation title"
+        initial={state.chat.title}
+        confirmLabel="Rename"
+        onSubmit={async (title) => {
+          setRenaming(false);
+          if (state.chat.id) await chat.rename(state.chat.id, title);
+        }}
+        onCancel={() => setRenaming(false)}
+      />
     </div>
   );
 }

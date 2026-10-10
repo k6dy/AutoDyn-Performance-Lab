@@ -6,6 +6,7 @@ import { buildChanges, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposa
 import { modelOutputSchema, requestSchema, type AssistantRequest } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
 import { AI_LIMITS, PROVIDER_MESSAGES } from "@/lib/ai/types";
+import { classifyRelevance, localReply } from "@/lib/ai/relevance";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
@@ -44,6 +45,7 @@ const STATUS: Record<AssistantErrorCode, number> = {
   invalid_request: 400,
   message_too_long: 413,
   duplicate: 409,
+  offline: 503,
 };
 
 function fail(code: AssistantErrorCode, requestId?: string, retryAfterS?: number): Result {
@@ -157,6 +159,14 @@ export function contradictsFeasibility(reply: string, lines: string[]) {
   });
 }
 
+const DETAIL_REQUEST = /\b(?:in (?:more )?detail|detailed|elaborate|deep dive|in depth|technical(?:ly)?|step[- ]by[- ]step|more detail)\b/i;
+const ANALYSIS_INTENTS = ["analyze_vehicle", "modify", "compare", "sensitivity", "explain", "assumptions"];
+
+/**
+ * Pipeline: validate → duplicate / rate-limit checks → local automotive relevance gate →
+ * provider call → output validation. The gate is authoritative here (not only in the browser), so
+ * direct API calls can't spend provider quota on off-topic requests.
+ */
 export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps): Promise<Result> {
   const maybe = raw as { message?: unknown; requestId?: unknown } | null;
   const requestId = typeof maybe?.requestId === "string" ? maybe.requestId.slice(0, 64) : undefined;
@@ -167,17 +177,35 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   const req: AssistantRequest = parsed.data;
   if (JSON.stringify(req.context).length > AI_LIMITS.maxContextChars) return fail("invalid_request", req.requestId);
 
-  if (!deps.configured) return fail("not_configured", req.requestId);
   if (!(await deps.limiter.claim(req.requestId))) return fail("duplicate", req.requestId);
   const limit = await deps.limiter.check(deps.clientKey);
   if (!limit.allowed) return fail(limit.scope === "global" ? "quota" : "rate_limited", req.requestId, limit.retryAfterS);
+
+  const relevance = classifyRelevance(req.message, { history: req.history, hasVehicle: !!req.context.vehicle, hasResults: !!req.context.results });
+  if (relevance.decision !== "allow") {
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        requestId: req.requestId,
+        reply: localReply(relevance)!,
+        followUpQuestion: null,
+        proposal: null,
+        suggestedAction: null,
+        notices: [],
+        local: relevance.decision === "reject" ? (relevance.basis === "injection" ? "injection" : "off_topic") : relevance.decision,
+      },
+    };
+  }
+  if (!deps.configured) return fail("not_configured", req.requestId);
+  const detailed: AssistantRequest = { ...req, detail: req.detail || DETAIL_REQUEST.test(req.message) };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let call: ModelCallResult;
   try {
     call = await Promise.race([
-      deps.callModel(buildContents(req), controller.signal),
+      deps.callModel(buildContents(detailed), controller.signal),
       new Promise<ModelCallResult>((resolve) => controller.signal.addEventListener("abort", () => resolve({ ok: false, code: "timeout" }))),
     ]);
   } catch {
@@ -227,7 +255,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
       : null;
 
   let suggestedAction: SuggestedAction = null;
-  if (!proposal && req.context.vehicle) {
+  if (!proposal && req.context.vehicle && ANALYSIS_INTENTS.includes(output.intent)) {
     if (!req.context.results || req.context.results.stale) suggestedAction = "run_analysis";
     else if (["explain", "sensitivity", "assumptions", "compare", "analyze_vehicle"].includes(output.intent)) suggestedAction = "open_results";
   }
@@ -239,7 +267,11 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   } ${kept.map((c) => c.display).join(" ")}`;
   const unverified = unverifiedFigures(reply, known);
   if (unverified.length) {
-    notices.push(`This reply mentions figures that are not in AutoDyn's data for this session (${unverified.join(", ")}). Treat them as unverified.`);
+    notices.push(
+      output.intent === "general"
+        ? `General automotive knowledge, not AutoDyn data: figures such as ${unverified.join(", ")} are typical values, not verified for a specific vehicle.`
+        : `This reply mentions figures that are not in AutoDyn's data for this session (${unverified.join(", ")}). Treat them as unverified.`,
+    );
   }
   const feasibilityLines = req.context.results?.feasibility ?? [];
   if (feasibilityLines.length && contradictsFeasibility(reply, feasibilityLines)) {
