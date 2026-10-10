@@ -20,6 +20,8 @@ export type StoredMessage = {
   createdAt: number;
   /** results: deterministic engine summary · local: answered by the relevance gate (no AI call). */
   kind?: "results" | "local";
+  /** For local replies: why the gate answered without the provider (clarify turns stay in context). */
+  localKind?: "clarify" | "off_topic" | "injection" | "small_talk";
   notices?: string[];
   followUp?: string | null;
   /** User message whose request failed; kept for retry, never sent as history. */
@@ -60,6 +62,7 @@ export const storedMessageSchema = z.object({
   text: z.string().max(MAX_TEXT),
   createdAt: z.number().finite(),
   kind: z.enum(["results", "local"]).optional(),
+  localKind: z.enum(["clarify", "off_topic", "injection", "small_talk"]).optional(),
   notices: z.array(z.string().max(600)).max(10).optional(),
   followUp: z.string().max(400).nullable().optional(),
   failed: z.boolean().optional(),

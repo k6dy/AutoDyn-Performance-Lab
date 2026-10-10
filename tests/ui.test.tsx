@@ -20,7 +20,7 @@ import { AppProvider } from "@/state/AppProvider";
 import { IDBFactory } from "fake-indexeddb";
 import { getRepository, IndexedDbRepository, MemoryRepository, setRepository, StorageError } from "@/lib/persistence/repository";
 import { buildBackup } from "@/lib/persistence/backup";
-import { getConversations, IndexedDbConversations, setConversations } from "@/lib/persistence/conversations";
+import { getConversations, IndexedDbConversations, setConversations, type ConversationRepository } from "@/lib/persistence/conversations";
 import { OFF_TOPIC_REPLY } from "@/lib/ai/relevance";
 import { buildRecord, fingerprint } from "@/lib/persistence/snapshot";
 
@@ -34,6 +34,7 @@ let assistantCalls = 0;
 let lastAssistantBody: { message: string; history: { role: string; text: string }[] } | null = null;
 let assistantGate: Promise<void> | null = null;
 let assistantFailures: string[] = [];
+let lastContents: unknown[] | null = null;
 let reducedMotion = false;
 
 const deployment = { environment: "preview", branch: "autodyn-v2", commit: "abc1234" };
@@ -64,7 +65,10 @@ const routes: Record<string, Handler> = {
     const result = await handleAssistantRequest(raw, {
       configured: aiConfigured,
       timeoutMs: 1000,
-      callModel: async () => ({ ok: true, text: JSON.stringify(modelOutput) }),
+      callModel: async (contents) => {
+        lastContents = contents;
+        return { ok: true, text: JSON.stringify(modelOutput) };
+      },
       limiter: new MemoryRateLimiter({ perMinute: 100, perDay: 100, globalPerDay: 100 }),
       clientKey: "ui-test",
       trims: allDatasetTrims,
@@ -85,6 +89,7 @@ beforeEach(() => {
   lastAssistantBody = null;
   assistantGate = null;
   assistantFailures = [];
+  lastContents = null;
   reducedMotion = false;
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -1020,7 +1025,7 @@ describe("Automotive assistant & chat history", () => {
     unmount(); // leave the site
     renderApp(); // …and return in the same browser
     await openAssistant();
-    expect(await within(chatLog()).findByText("How does a turbocharger work?")).toBeTruthy();
+    await waitFor(() => expect(within(chatLog()).getByText("How does a turbocharger work?")).toBeTruthy(), { timeout: 5000 }); // log remounts on open
     modelOutput = general("Modern turbos are durable with clean oil and cool-downs.");
     await ask("What about reliability?");
     await within(chatLog()).findByText(/durable with clean oil/);
@@ -1038,7 +1043,7 @@ describe("Automotive assistant & chat history", () => {
     await waitFor(() => expect(chatItems()).toHaveLength(2));
 
     fireEvent.click(within(itemTitled(/Turbochargers/)).getAllByRole("button")[0]);
-    await waitFor(() => expect(within(chatLog()).getByText(/durable with clean oil/)).toBeTruthy()); // the log remounts per conversation
+    await waitFor(() => expect(within(chatLog()).getByText(/durable with clean oil/)).toBeTruthy(), { timeout: 5000 }); // the log remounts per conversation
     expect(within(chatLog()).queryByText(/clamp a rotor/)).toBeNull();
     expect(within(chatLog()).getAllByText("How does a turbocharger work?")).toHaveLength(1); // no duplicates
   });
@@ -1184,6 +1189,116 @@ describe("Automotive assistant & chat history", () => {
     await openAssistant();
     expect(screen.getByText(/biggest limitations of this build/)).toBeTruthy();
     expect(screen.getByText(/a new chat keeps your current configuration/)).toBeTruthy();
+  });
+});
+
+const lastTurn = () => (lastContents!.at(-1) as { parts: { text: string }[] }).parts[0].text;
+
+describe("Conversation context in the assistant", () => {
+  it("Jaguar regression: clarify locally, then answer the follow-up with the Jaguar V8 subject", async () => {
+    renderApp();
+    await openAssistant();
+    await ask("do jaguars like to pur?");
+    expect(await within(chatLog()).findByText("Do you mean Jaguar cars or the animal?")).toBeTruthy();
+    expect(screen.getByText(/clarifying locally, no AI request/)).toBeTruthy();
+    expect(assistantCalls).toBe(0);
+
+    modelOutput = general("Jaguar has used V8 engines, including supercharged versions, since the late 1990s.");
+    await ask("the v8 jaguar");
+    await within(chatLog()).findByText(/since the late 1990s/);
+    expect(assistantCalls).toBe(1);
+    expect(lastAssistantBody!.history.map((h) => h.text)).toEqual(["do jaguars like to pur?", "Do you mean Jaguar cars or the animal?"]);
+
+    modelOutput = general("V8 Jaguars include the XK, XJ, XF, XE SV Project 8 and F-Type; availability varies by year and market.");
+    await ask("what models are there?");
+    await within(chatLog()).findByText(/availability varies by year/);
+    expect(assistantCalls).toBe(2);
+    expect(screen.queryByText(/Which vehicle, part or system do you mean/)).toBeNull();
+    expect(lastTurn()).toMatch(/CONVERSATION SUBJECT .*: Jaguar · V8/);
+    expect(lastTurn()).toMatch(/FOLLOW-UP: yes/);
+    expect(screen.getByTestId("chat-subject").textContent).toMatch(/Jaguar · V8/);
+
+    await ask("Do cows hibernate?");
+    await waitFor(() => expect(within(chatLog()).getByText(OFF_TOPIC_REPLY)).toBeTruthy());
+    expect(assistantCalls).toBe(2); // still zero provider calls for off-topic
+  });
+
+  it("K. a restored conversation keeps its subject for follow-ups", async () => {
+    modelOutput = general("Jaguar V8s powered the XK, XJ and F-Type among others.");
+    const { unmount } = renderApp();
+    await openAssistant();
+    await ask("Tell me about Jaguar V8 engines.");
+    await within(chatLog()).findByText(/powered the XK/);
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+    unmount();
+    renderApp();
+    await openAssistant();
+    // The log remounts when the conversation opens, so re-query it on every attempt.
+    await waitFor(() => expect(within(chatLog()).getByText("Tell me about Jaguar V8 engines.")).toBeTruthy(), { timeout: 5000 });
+    modelOutput = general("Supercharged 5.0 V8s appeared in R, SVR and F-Type R models.");
+    await ask("What about the supercharged models?");
+    await within(chatLog()).findByText(/Supercharged 5\.0 V8s/);
+    expect(lastTurn()).toMatch(/SUBJECT .*Jaguar · V8, supercharged/);
+    expect(lastAssistantBody!.history[0].text).toBe("Tell me about Jaguar V8 engines.");
+  });
+
+  it("L. switching chats switches the subject — no leakage between conversations", async () => {
+    renderApp();
+    await openAssistant();
+    modelOutput = general("Jaguar used V8s across its range.");
+    await ask("Tell me about Jaguar V8 engines.");
+    await within(chatLog()).findByText(/across its range/);
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+    fireEvent.click(newChatButton());
+    modelOutput = general("A turbocharger is driven by exhaust gas.");
+    await ask("How does a turbocharger work?");
+    await waitFor(() => expect(within(chatLog()).getByText(/driven by exhaust gas/)).toBeTruthy());
+    await waitFor(() => expect(chatItems()).toHaveLength(2));
+    fireEvent.click(within(itemTitled(/Jaguar/)).getAllByRole("button")[0]);
+    await waitFor(() => expect(within(chatLog()).getByText(/across its range/)).toBeTruthy());
+    modelOutput = general("The XK, XJ, XF and F-Type offered V8s.");
+    await ask("What models are there?");
+    await waitFor(() => expect(within(chatLog()).getByText(/offered V8s/)).toBeTruthy());
+    expect(lastTurn()).toMatch(/SUBJECT .*Jaguar · V8/);
+    expect(lastTurn()).not.toMatch(/turbo/i);
+    expect(JSON.stringify(lastAssistantBody!.history)).not.toMatch(/turbocharger/);
+  });
+});
+
+describe("chat persistence under slow storage", () => {
+  it("switching chats while a write is in flight never drops the previous chat's latest messages", async () => {
+    const base = new IndexedDbConversations(new IDBFactory());
+    const slow: ConversationRepository = {
+      persistent: true,
+      list: () => base.list(),
+      get: (id) => base.get(id),
+      put: async (c) => {
+        await new Promise((r) => setTimeout(r, 80));
+        await base.put(c);
+      },
+      append: (id, m) => base.append(id, m),
+      rename: (id, t) => base.rename(id, t),
+      delete: (id) => base.delete(id),
+      clear: () => base.clear(),
+    };
+    setConversations(slow);
+    renderApp();
+    await openAssistant();
+    modelOutput = general("Turbos are durable with clean oil.");
+    await ask("Are turbochargers reliable?");
+    await within(chatLog()).findByText(/durable with clean oil/);
+    fireEvent.click(newChatButton()); // immediately, while earlier snapshots are still being written
+    modelOutput = general("Disc brakes clamp a rotor between pads.");
+    await ask("How do disc brakes work?");
+    await waitFor(() => expect(within(chatLog()).getByText(/clamp a rotor/)).toBeTruthy());
+    await waitFor(
+      async () => {
+        const { items } = await base.list();
+        const turbo = items.find((i) => /Turbo/.test(i.title))!;
+        expect((await base.get(turbo.id)).messages.map((m) => m.text)).toContain("Turbos are durable with clean oil.");
+      },
+      { timeout: 5000 },
+    );
   });
 });
 

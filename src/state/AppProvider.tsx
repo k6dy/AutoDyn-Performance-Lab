@@ -12,6 +12,8 @@ import { hasMeaningfulEdits } from "@/lib/persistence/snapshot";
 import { historyFor } from "@/lib/ai/history";
 import { classifyRelevance, localReply } from "@/lib/ai/relevance";
 import { generateTitle, shortVehicle } from "@/lib/ai/titles";
+import { describeTopic, type Topic } from "@/lib/ai/topic";
+import type { SpecSet } from "@/lib/domain/types";
 import {
   getConversations,
   MAX_CONVERSATION_MESSAGES,
@@ -28,6 +30,14 @@ import { runAnalysis } from "@/lib/physics/analysis";
 import { initialState, isStale, NEW_CHAT_TITLE, reducer, type Action, type AppState, type ChatMessage, type ChatState } from "@/state/reducer";
 
 const ACTIVE_CHAT_KEY = "autodyn:chat:active";
+
+/** Local title: the user's words first, then the tracked subject ("Jaguar V8"), else the default. */
+function titleFor(userTexts: string[], vehicle: SpecSet | null, topic: Topic | null) {
+  const t = generateTitle(userTexts, shortVehicle(vehicle?.identity ?? null));
+  if (t !== NEW_CHAT_TITLE) return t;
+  const subject = describeTopic(topic);
+  return subject ? subject.replace(/ · /g, " — ").slice(0, 60) : t;
+}
 
 export type AiStatus = {
   /** checking: request in flight · ready: provider verified · untested: configured, not yet probed · unavailable: cannot be used. */
@@ -152,6 +162,7 @@ async function withChats<T>(fn: (repo: ConversationRepository) => Promise<T>): P
 const toStored = (m: ChatMessage): StoredMessage => {
   const out: StoredMessage = { id: m.id, role: m.role, text: m.text.slice(0, 4000), createdAt: m.createdAt };
   if (m.kind) out.kind = m.kind;
+  if (m.localKind) out.localKind = m.localKind;
   if (m.notices?.length) out.notices = m.notices.slice(0, 10);
   if (m.followUp) out.followUp = m.followUp;
   if (m.failed) out.failed = true;
@@ -161,9 +172,9 @@ const toStored = (m: ChatMessage): StoredMessage => {
   return out;
 };
 
-/** The stored form of the open conversation (null until it has a non-local message). */
+/** The stored form of the open conversation (null until it has a message worth keeping). */
 function conversationOf(chat: ChatState): Conversation | null {
-  if (!chat.id || !chat.messages.some((m) => m.kind !== "local")) return null;
+  if (!chat.id || !chat.messages.some((m) => m.kind !== "local" || m.localKind === "clarify")) return null;
   const last = Math.max(...chat.messages.map((m) => m.createdAt || 0), Date.parse(chat.createdAt ?? "") || 0);
   return withDerived({
     id: chat.id,
@@ -201,7 +212,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [aiStatus, setAiStatus] = useState<AiStatus>({ phase: "checking", code: null, model: null, deployment: null, checkedAt: null });
   const hydrated = useRef(false);
   const inflightChats = useRef(new Set<string>());
-  const chatWrite = useRef<{ pending: Conversation | null; busy: boolean; deleted: Set<string> }>({ pending: null, busy: false, deleted: new Set() });
+  // Latest unsaved snapshot per conversation: switching chats mid-write must not drop the other chat's newest state.
+  const chatWrite = useRef<{ pending: Map<string, Conversation>; busy: boolean; deleted: Set<string> }>({ pending: new Map(), busy: false, deleted: new Set() });
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const latest = useRef(state);
   const savingRun = useRef<string | null>(null);
@@ -209,6 +221,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     latest.current = state;
   });
+
+  // Once unmounted, queued writes and late replies are dropped instead of touching storage.
+  const disposed = useRef(false);
+  useEffect(() => {
+    disposed.current = false;
+    return () => {
+      disposed.current = true;
+    };
+  }, []);
 
   // After mount (never during render, so no hydration mismatch): restore the unit preference and
   // offer — not apply — the last session's workspace.
@@ -252,9 +273,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const w = chatWrite.current;
     if (w.busy) return;
     w.busy = true;
-    while (w.pending) {
-      const c = w.pending;
-      w.pending = null;
+    while (w.pending.size) {
+      const [id, c] = w.pending.entries().next().value as [string, Conversation];
+      w.pending.delete(id);
+      if (disposed.current) break;
       if (w.deleted.has(c.id)) continue;
       try {
         await withChats((repo) => repo.put(c));
@@ -275,7 +297,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   useEffect(() => {
     if (!record) return;
-    chatWrite.current.pending = record;
+    chatWrite.current.pending.set(record.id, record);
     void flushChat();
   }, [record, flushChat]);
 
@@ -420,6 +442,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /** Delivers a provider response to its own conversation only — never to whichever chat is open. */
   const deliver = useCallback((conversationId: string, userMessageId: string, requestId: string, body: AssistantResponse) => {
     inflightChats.current.delete(conversationId);
+    if (disposed.current) return;
     const s = latest.current;
     const current = s.chat.id === conversationId;
     if (body.ok) {
@@ -498,12 +521,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Local automotive relevance gate: off-topic, injection, small talk and ambiguous messages are
       // answered here without any network request (the server enforces the same gate).
       const relevance = classifyRelevance(message, { history, hasVehicle: !!vehicle, hasResults: !!s.result });
+      const userTexts = [...s.chat.messages.filter((m) => m.role === "user" && (m.kind !== "local" || m.localKind === "clarify")).map((m) => m.text), message];
+      const title = s.chat.customTitle || s.chat.title !== NEW_CHAT_TITLE || relevance.decision === "reject" ? null : titleFor(userTexts, vehicle ?? s.chat.vehicle, relevance.topic);
       if (relevance.decision !== "allow") {
-        dispatch({ type: "chatLocal", conversationId, vehicle, message: userMessage, reply: { id: `l-${userMessage.id}`, role: "assistant", text: localReply(relevance)!, createdAt: now } });
+        const localKind = relevance.decision === "clarify" ? "clarify" : relevance.decision === "small_talk" ? "small_talk" : relevance.basis === "injection" ? "injection" : "off_topic";
+        dispatch({
+          type: "chatLocal",
+          conversationId,
+          vehicle,
+          localKind,
+          title: localKind === "clarify" ? null : title,
+          message: userMessage,
+          reply: { id: `l-${userMessage.id}`, role: "assistant", text: localReply(relevance)!, createdAt: now },
+        });
         return;
       }
-      const userTexts = [...s.chat.messages.filter((m) => m.role === "user" && m.kind !== "local").map((m) => m.text), message];
-      const title = s.chat.customTitle || s.chat.title !== NEW_CHAT_TITLE ? null : generateTitle(userTexts, shortVehicle(vehicle?.identity ?? s.chat.vehicle?.identity ?? null));
       dispatch({ type: "chatSend", conversationId, title, vehicle, message: userMessage });
       request(conversationId, userMessage, history, userMessage.id, !!opts?.detail);
     },
@@ -561,7 +593,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const { items } = await withChats((repo) => repo.list());
           for (const m of items) chatWrite.current.deleted.add(m.id);
           if (latest.current.chat.id) chatWrite.current.deleted.add(latest.current.chat.id);
-          chatWrite.current.pending = null;
+          chatWrite.current.pending.clear();
           await withChats((repo) => repo.clear());
           dispatch({ type: "chatDeleted", ids: "all" });
           return { ok: true };
@@ -572,7 +604,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       retrySave: () => {
         const c = conversationOf(latest.current.chat);
         if (!c) return;
-        chatWrite.current.pending = c;
+        chatWrite.current.pending.set(c.id, c);
         void flushChat();
       },
     }),

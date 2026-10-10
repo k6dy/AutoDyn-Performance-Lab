@@ -30,6 +30,7 @@ export type ChatMessage = {
   suggestedAction?: SuggestedAction;
   /** results: deterministic summary after an assistant-applied run · local: answered by the relevance gate. */
   kind?: "results" | "local";
+  localKind?: "clarify" | "off_topic" | "injection" | "small_talk";
   /** User message whose request failed; kept for retry and never sent as history. */
   failed?: boolean;
   /** Saved analysis produced by this run (results messages). */
@@ -186,7 +187,7 @@ export type Action =
   | { type: "runComplete"; analysis: AnalysisResult; revision: number }
   | { type: "runFailed" }
   | { type: "chatSend"; message: ChatMessage; conversationId: string; title: string | null; vehicle: SpecSet | null }
-  | { type: "chatLocal"; message: ChatMessage; reply: ChatMessage; conversationId: string; vehicle: SpecSet | null }
+  | { type: "chatLocal"; message: ChatMessage; reply: ChatMessage; conversationId: string; vehicle: SpecSet | null; localKind: NonNullable<ChatMessage["localKind"]>; title: string | null }
   | { type: "chatReceive"; requestId: string; conversationId: string; message: ChatMessage; proposal: Proposal | null }
   | { type: "chatFailed"; requestId: string; conversationId: string; messageId: string; code: AssistantErrorCode }
   | { type: "chatRetry"; messageId: string; requestId: string }
@@ -456,7 +457,8 @@ export function reducer(state: AppState, action: Action): AppState {
           id: action.conversationId,
           createdAt: c.createdAt ?? new Date(action.message.createdAt).toISOString(),
           vehicle: c.vehicle ?? action.vehicle,
-          messages: [...c.messages, { ...action.message, kind: "local" as const }, { ...action.reply, kind: "local" as const }],
+          title: !c.customTitle && action.title ? action.title : c.title,
+          messages: [...c.messages, { ...action.message, kind: "local" as const, localKind: action.localKind }, { ...action.reply, kind: "local" as const, localKind: action.localKind }],
         },
       };
     }

@@ -141,7 +141,8 @@ export const AI_UNAVAILABLE_MESSAGE = "AI assistance is temporarily unavailable.
 
 export const AI_LIMITS = {
   maxMessageChars: 800,
-  maxHistoryTurns: 8,
+  /** 8 recent turns plus up to 2 that established the conversation's subject. */
+  maxHistoryTurns: 10,
   maxHistoryChars: 1500,
   /** Total characters of conversation history sent with one request. */
   maxHistoryTotalChars: 6000,

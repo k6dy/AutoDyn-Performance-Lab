@@ -6,7 +6,8 @@ import { buildChanges, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposa
 import { modelOutputSchema, requestSchema, type AssistantRequest } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
 import { AI_LIMITS, PROVIDER_MESSAGES } from "@/lib/ai/types";
-import { classifyRelevance, localReply } from "@/lib/ai/relevance";
+import { classifyRelevance, isInjection, localReply } from "@/lib/ai/relevance";
+import { describeTopic } from "@/lib/ai/topic";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
@@ -153,7 +154,7 @@ export function contradictsFeasibility(reply: string, lines: string[]) {
     const claimed = statusesIn(sentence);
     if (!claimed.size) return false;
     const mod = /modif/i.test(sentence);
-    const stock = /stock|factory/i.test(sentence);
+    const stock = /\bstock\b|factory/i.test(sentence);
     const allowed = mod && !stock && engine.modified ? new Set([engine.modified]) : stock && !mod && engine.stock ? new Set([engine.stock]) : all;
     return [...claimed].some((c) => !allowed.has(c));
   });
@@ -181,7 +182,10 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   const limit = await deps.limiter.check(deps.clientKey);
   if (!limit.allowed) return fail(limit.scope === "global" ? "quota" : "rate_limited", req.requestId, limit.retryAfterS);
 
-  const relevance = classifyRelevance(req.message, { history: req.history, hasVehicle: !!req.context.vehicle, hasResults: !!req.context.results });
+  // Client history is untrusted: roles are schema-checked; entries that try to act as instructions
+  // (role labels, "ignore your rules"…) are dropped before classification and before the provider.
+  const history = req.history.filter((h) => !isInjection(h.text));
+  const relevance = classifyRelevance(req.message, { history, hasVehicle: !!req.context.vehicle, hasResults: !!req.context.results });
   if (relevance.decision !== "allow") {
     return {
       status: 200,
@@ -193,19 +197,20 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
         proposal: null,
         suggestedAction: null,
         notices: [],
-        local: relevance.decision === "reject" ? (relevance.basis === "injection" ? "injection" : "off_topic") : relevance.decision,
+        local: relevance.decision === "reject" ? (relevance.basis === "injection" ? "injection" : "off_topic") : relevance.decision === "clarify" ? "clarify" : "small_talk",
       },
     };
   }
   if (!deps.configured) return fail("not_configured", req.requestId);
-  const detailed: AssistantRequest = { ...req, detail: req.detail || DETAIL_REQUEST.test(req.message) };
+  const detailed: AssistantRequest = { ...req, history, detail: req.detail || DETAIL_REQUEST.test(req.message) };
+  const subject = { subject: describeTopic(relevance.topic), followUp: relevance.outcome === "CONTEXTUAL_FOLLOWUP" };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let call: ModelCallResult;
   try {
     call = await Promise.race([
-      deps.callModel(buildContents(detailed), controller.signal),
+      deps.callModel(buildContents(detailed, subject), controller.signal),
       new Promise<ModelCallResult>((resolve) => controller.signal.addEventListener("abort", () => resolve({ ok: false, code: "timeout" }))),
     ]);
   } catch {
@@ -227,7 +232,9 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
 
   let followUp = output.followUpQuestion ? sanitizeReply(output.followUpQuestion).slice(0, 300) : null;
   let vehicle: VehicleProposal | null = null;
-  if (output.vehicle.mentioned && !output.useCurrentVehicle) {
+  // Ordinary automotive conversation never produces a simulation proposal.
+  if (output.intent === "general") output.changes = [];
+  if (output.vehicle.mentioned && !output.useCurrentVehicle && output.intent !== "general") {
     const r = await resolveVehicle(output.vehicle, deps);
     vehicle = r.proposal;
     followUp = followUp ?? r.question;

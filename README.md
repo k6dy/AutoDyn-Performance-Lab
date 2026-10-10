@@ -50,17 +50,26 @@ See `.env.example`. All are optional — without them the app is fully functiona
 
 Every assistant message passes: request validation → duplicate/rate-limit checks → **local relevance classification** (`src/lib/ai/relevance.ts`, vocabulary in `lexicon.ts`) → Gemini only if allowed → output validation. The gate runs in the browser for instant feedback and, authoritatively, in `POST /api/assistant`, so direct API calls can't spend quota on off-topic text. No second model and no network call is used to classify.
 
-- Weighted evidence: automotive terms, phrases, makes, models, engine/chassis codes, units (hp, lb-ft, psi, rpm…) and typo tolerance for long technical words, against off-topic vocabulary (animals, recipes, essays, weather, finance, programming…).
-- Follow-ups ("What about reliability?", "Explain that again.") are allowed only when they read as follow-ups **and** the recent turns of the same conversation are automotive; an earlier car discussion never authorizes unrelated questions. References to the configured vehicle or results ("explain my results", "this build") are allowed when a vehicle is loaded.
-- Role-change / instruction-override attempts are rejected; ambiguous messages get a local request to name the vehicle or part; greetings/thanks are answered locally.
+Each message gets one outcome:
+
+| Outcome | Meaning | Provider call |
+|---|---|---|
+| `AUTOMOTIVE` | Clearly about vehicles, parts, maintenance, modifications, engineering or AutoDyn results (weighted vocabulary: components, makes, models, engine/chassis codes, units, phrases, typo tolerance for long technical words). | Yes |
+| `CONTEXTUAL_FOLLOWUP` | No explicit subject, but it reads as a follow-up ("What models are there?", "Which launches better?", "Is it legal?", "Why?") **and** this conversation has an established automotive subject. | Yes, with the subject |
+| `AMBIGUOUS` | Subject unclear: a specific local question instead of a refusal — "Do you mean Jaguar cars or the animal?" for names that are also everyday words, "Which vehicle, part or repair do you want the cost of?" for a bare cost question; the generic prompt is the last resort. | No |
+| `OFF_TOPIC` | Clearly unrelated (animals, recipes, essays, weather, finance, programming…) or an attempt to change the assistant's role. Explicit off-topic content overrides any earlier car discussion. | No |
+
+- **Subject tracking** (`src/lib/ai/topic.ts`): a small typed structure — manufacturers, models, years, engine families, components — derived deterministically from the user's messages of the current conversation only (never another chat, and not the vehicle loaded in Manual Setup). Naming a new vehicle or asking a new general question starts a new subject; referring questions ("What about the supercharged models?", "Could spark plugs cause it?") refine it; an ambiguous name only counts once the car meaning is confirmed. It is rebuilt from stored messages, so reopened chats keep their subject. The header shows it ("Subject: Jaguar · V8").
+- **Gemini context:** the recent turns of the current conversation plus, if it has scrolled out of that window, the message that established the subject; our local clarifying exchange stays in context (off-topic rejections don't). The server rebuilds the subject from the validated history and passes it as a data-only line with a follow-up hint. History entries that try to act as instructions (role labels, "ignore your rules"…) are dropped server-side; roles other than user/assistant are rejected.
+- Ordinary automotive questions get intent `general` and never produce a simulation proposal; modification requests keep the Proposal → Review → Apply → Simulation flow.
 - Rejections use the fixed text *"I'm here for cars, parts, and vehicle performance. Ask me something automotive-related."* and are marked *answered locally, no AI request*.
-- **Limitations:** it is a heuristic. Rare slang or model names in a very terse question may be asked to clarify; requests that merely mention a car inside creative/off-topic tasks are rejected; an off-topic question phrased entirely in automotive vocabulary could pass — the Gemini system instruction (automotive scope only, ignore role changes) is the second line of defense.
+- **Limitations:** it is a heuristic, not language understanding. A terse first message with rare slang or model names may be asked to clarify; an off-topic question with no off-topic vocabulary that reads like a follow-up inside a car conversation can reach Gemini, whose system instruction keeps it in scope; requests that merely mention a car inside creative/off-topic tasks are rejected.
 
 ### Conversations
 
 Stored locally in IndexedDB (stores `chats` and `chatMessages`, separate from saved analyses): ID, title, timestamps, the ordered transcript, the vehicle in context and IDs of saved analyses the chat produced. Saved after every change; the last open conversation reopens on return; its vehicle is only *offered* for loading. Records are schema-validated on read; damaged ones are skipped, never crash the list. No keys, credentials or server instructions are stored.
 
-- **Context sent to Gemini:** only the current conversation's most recent eligible turns — at most 8 messages and 6,000 characters (each ≤ 1,500), excluding locally answered, failed and engine-summary messages. Older turns are not sent and the UI says so; nothing is summarized by AI.
+- **Context sent to Gemini:** only the current conversation — the 8 most recent eligible turns plus, when needed, the subject-establishing turn (≤ 10 messages, 6,000 characters, each ≤ 1,500), excluding off-topic rejections, failed and engine-summary messages. Older turns are not sent and the UI says so; nothing is summarized by AI.
 - **Titles** are generated locally from the user's words and vehicle (e.g. "2015 C300 — +40 hp", "M340i vs C43 AMG"); never by an AI request. Users can rename.
 - Each request carries its conversation ID; a reply that arrives after the user switched chats is filed into its own conversation, never the one on screen. Failed messages stay in the transcript with **Retry**.
 - Deleting a chat (or all chats) never deletes saved analyses, and deleting an analysis shows it as unavailable in the chat.

@@ -1,7 +1,7 @@
 "use client";
 
 import { Archive, ArrowUp, CarFront, Cog, Gauge, History, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, Pencil, Play, PlugZap, RotateCcw, Scale, SlidersHorizontal } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import ChatHistory from "@/components/assistant/ChatHistory";
 import ProposalPanel from "@/components/assistant/ProposalPanel";
 import { ConfirmDialog, Dialog, PromptDialog } from "@/components/Dialog";
@@ -9,6 +9,7 @@ import LoadingStage, { BrandGlyph } from "@/components/LoadingStage";
 import { Button, cx, Kbd, Panel, ProvenanceTag, Spinner } from "@/components/ui";
 import { displaySpec } from "@/lib/ai/context";
 import { omittedCount } from "@/lib/ai/history";
+import { deriveTopic, describeTopic } from "@/lib/ai/topic";
 import { AI_LIMITS, AI_UNAVAILABLE_MESSAGE, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
 import { SPEC_LABEL } from "@/lib/domain/fields";
 import { effectiveValues, modifiedDiff } from "@/lib/domain/scenario";
@@ -176,7 +177,9 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
       <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium tracking-wide text-faint uppercase">
         {m.kind === "results" ? "Physics engine" : "AutoDyn assistant"}
         {m.kind === "results" && <ProvenanceTag provenance="verified" title="Computed deterministically — not AI-generated" />}
-        {m.kind === "local" && <span className="font-normal tracking-normal normal-case">· answered locally, no AI request</span>}
+        {m.kind === "local" && (
+          <span className="font-normal tracking-normal normal-case">{m.localKind === "clarify" ? "· clarifying locally, no AI request" : "· answered locally, no AI request"}</span>
+        )}
       </div>
       <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f5a8a8]" : "text-ink", m.kind === "results" && "num text-[13px]")}>
         <PlainText text={m.text} />
@@ -404,6 +407,11 @@ const SUGGESTIONS: { category: string; text: string; icon: typeof Gauge; needsVe
 function ChatHeader({ onHistory, sidebarOpen, onRename }: { onHistory: (inline: boolean) => void; sidebarOpen: boolean; onRename: () => void }) {
   const { state, chat } = useApp();
   const c = state.chat;
+  // The subject follow-ups refer to, derived locally from this conversation only.
+  const subject = useMemo(
+    () => describeTopic(deriveTopic(c.messages.filter((m) => !m.failed && !m.errorCode && m.kind !== "results" && (m.kind !== "local" || m.localKind === "clarify"))).topic),
+    [c.messages],
+  );
   return (
     <div className="flex items-center gap-2 border-b border-line px-3 py-2 sm:px-4">
       <Button size="sm" variant="ghost" className="h-8 px-2 xl:hidden" onClick={() => onHistory(false)} aria-label="Open chat history">
@@ -415,7 +423,7 @@ function ChatHeader({ onHistory, sidebarOpen, onRename }: { onHistory: (inline: 
         </Button>
       )}
       <div className="min-w-0 flex-1">
-        {c.id && c.messages.some((m) => m.kind !== "local") ? (
+        {c.id && c.messages.some((m) => m.kind !== "local" || m.localKind === "clarify") ? (
           <button type="button" onClick={onRename} className="group flex max-w-full items-center gap-1.5 rounded-sm text-left" aria-label={`Rename conversation: ${c.title}`}>
             <span key={c.id} className="animate-fade truncate text-[14px] font-medium text-ink">
               {c.title}
@@ -424,6 +432,11 @@ function ChatHeader({ onHistory, sidebarOpen, onRename }: { onHistory: (inline: 
           </button>
         ) : (
           <span className="text-[14px] font-medium text-muted">New conversation</span>
+        )}
+        {subject && (
+          <span className="block truncate text-[11px] text-faint" data-testid="chat-subject">
+            Subject: {subject}
+          </span>
         )}
         {c.storage.status === "error" ? (
           <span className="flex items-center gap-1.5 text-[11px] text-error" role="alert">

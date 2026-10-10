@@ -308,6 +308,35 @@ suite.each([360, 390])("automotive assistant at %ipx", (width) => {
   }, 90_000);
 });
 
+suite("conversation context in a real browser", () => {
+  it("clarifies locally, then sends the follow-up with the established subject (390px)", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const { page, ctx, logs } = await newPage(390);
+    try {
+      const posts = await mockAssistant(page);
+      await page.getByRole("tab", { name: /Assistant/ }).click();
+      await send(page, "do jaguars like to pur?");
+      await page.getByText("Do you mean Jaguar cars or the animal?").waitFor();
+      expect(posts()).toBe(0);
+      await send(page, "the v8 jaguar");
+      await page.getByText(/exhaust energy to spin a compressor/).first().waitFor();
+      expect(posts()).toBe(1);
+      await send(page, "what models are there?");
+      await page.waitForFunction(() => document.querySelectorAll('[data-message-role="assistant"]').length >= 3);
+      expect(posts()).toBe(2);
+      expect(await page.getByText(/Which vehicle, part or system do you mean/).count()).toBe(0);
+      expect(await page.getByTestId("chat-subject").textContent()).toMatch(/Jaguar · V8/);
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await send(page, "Do cows hibernate?");
+      await page.getByText("I'm here for cars, parts, and vehicle performance. Ask me something automotive-related.").waitFor();
+      expect(posts()).toBe(2);
+      expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
+});
+
 suite("automotive assistant on desktop", () => {
   it("shows a collapsible history sidebar beside the conversation without overflow", async () => {
     if (!browser) throw new Error("No Edge/Chrome installation found.");
