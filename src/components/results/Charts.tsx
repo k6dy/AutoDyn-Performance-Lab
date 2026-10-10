@@ -68,7 +68,7 @@ export function SpeedTimeChart({ stock, modified, units }: { stock: ScenarioResu
   const data = series.map((s) => ({ ...s, points: thin(s.r.samples, 2).map((p) => ({ t: Number(p.t.toFixed(2)), v: Number(toDisplay("speed", p.v, units).toFixed(1)) })) }));
   const qm = series.map((s) => s.r.metrics.quarterMileS).filter((x): x is number => x != null);
   return (
-    <ChartFrame title="Speed vs. time" caption={`Full-throttle run from rest, computed by the physics engine. Dashed line marks the quarter-mile finish.`}>
+    <ChartFrame title="Speed vs. time" caption={`Simulated full-throttle run from rest, calculated by AutoDyn (theoretical, not measured). Dashed line marks the quarter-mile finish.`}>
       <LineChart margin={{ top: 4, right: 14, left: 0, bottom: 16 }}>
         <CartesianGrid stroke={GRID} vertical={false} />
         <XAxis type="number" dataKey="t" domain={[0, "dataMax"]} {...axisProps} label={{ value: "Time (s)", position: "insideBottom", offset: -8, fill: AXIS, fontSize: 11 }} />

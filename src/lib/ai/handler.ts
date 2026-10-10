@@ -10,8 +10,9 @@ import { applyProposal } from "@/lib/ai/apply";
 import { appStateReply, appStatusPart, isPureAppQuestion } from "@/lib/ai/appState";
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
-import { gatherGrounding, sourcesOf, type OwnershipSources } from "@/lib/ai/grounding";
-import { dropEmptySections, stripFalseAttribution, stripStatusClaims, stripUnbackedPerformance, stripUnmodeledClaims, stripUnverifiedMoney } from "@/lib/ai/guards";
+import { gatherGrounding, lookupTargets, sourcesOf, type OwnershipSources } from "@/lib/ai/grounding";
+import { contradictsKnownSpecs, specFacts, specsKnown, vehicleFacts } from "@/lib/ai/vehicleData";
+import { dropEmptySections, filterSentences, stripFalseAttribution, stripStatusClaims, stripUnbackedPerformance, stripUnmodeledClaims, stripUnverifiedMoney } from "@/lib/ai/guards";
 import { classifyRelevance, declineNote, isInjection, localReply } from "@/lib/ai/relevance";
 import { OUTPUT_BUDGET, planResponse } from "@/lib/ai/responsePlan";
 import { describeTopic } from "@/lib/ai/topic";
@@ -242,6 +243,15 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   const plan = planResponse(message, { detail: req.detail, followUp: isFollowUp });
   const userTexts = [...history.filter((h) => h.role === "user").map((h) => h.text), message];
   const external = await gatherGrounding({ aspect: relevance.aspect, topic: relevance.topic, context: req.context, message, userTexts, sources: deps.ownership });
+  // Vehicles named in the message are resolved against the dataset BEFORE the provider answers, with
+  // the same matcher the proposal uses — so the reply and Review Changes describe the same records.
+  const facts = vehicleFacts(lookupTargets(relevance.topic, req.context, message, userTexts), {
+    trims: deps.trims(),
+    message,
+    units: req.context.units,
+    loaded: req.context.vehicle,
+    specSetFor: deps.specSetFor,
+  });
   // A state question bundled with other requests: AutoDyn answers that part from the real state.
   const statusPart = appStatusPart(message);
   const statusNow = statusPart ? appStateReply(statusPart, req.context) : null;
@@ -253,6 +263,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
     comparing: !!relevance.topic?.comparing,
     external,
     appState: statusNow,
+    vehicleData: facts,
   };
 
   const controller = new AbortController();
@@ -334,7 +345,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   // Everything AutoDyn or the user supplied: figures found here are not "invented".
   const known = `${JSON.stringify(req.context)} ${req.message} ${req.history.map((h) => h.text).join(" ")} ${
     vehicle && "specSet" in vehicle ? JSON.stringify(vehicle.specSet) : ""
-  } ${kept.map((c) => c.display).join(" ")} ${JSON.stringify(external)}`;
+  } ${vehicle && "specSet" in vehicle ? JSON.stringify(specFacts(vehicle.specSet, req.context.units)) : ""} ${JSON.stringify(facts)} ${kept.map((c) => c.display).join(" ")} ${JSON.stringify(external)}`;
 
   // Simulation state: performance claims need current physics results. A proposal (new or still
   // pending) means nothing has been simulated for it yet.
@@ -359,6 +370,13 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   if (money.removed) {
     reply = money.text || "AutoDyn has no verified pricing for this, so it won't quote a figure.";
     notices.push("Unverified dollar amounts were left out — AutoDyn has no live market, insurance or repair-price data.");
+  }
+  // Never contradict the dataset: when AutoDyn has the power, torque and weight (named vehicle, proposal
+  // vehicle or the loaded one), sentences claiming they are missing are removed.
+  const loadedKnown = !facts.length && ["Peak power", "Peak torque", "Vehicle weight (curb)"].every((f) => req.context.stockSpecs.some((x) => x.field === f && x.provenance !== "unavailable"));
+  if (loadedKnown || specsKnown(facts, vehicle?.kind === "load" ? vehicle.specSet : null)) {
+    const c = filterSentences(reply, contradictsKnownSpecs);
+    if (c.removed) reply = c.text || "AutoDyn's dataset has this vehicle's power, torque and curb weight — see the proposal below.";
   }
   // A specification credited to a verified source (EPA, "verified", "official") must be in AutoDyn's data.
   const attribution = stripFalseAttribution(reply, known);

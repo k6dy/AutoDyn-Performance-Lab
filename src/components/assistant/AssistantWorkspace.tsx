@@ -7,7 +7,8 @@ import Markdown from "@/components/assistant/Markdown";
 import ProposalPanel from "@/components/assistant/ProposalPanel";
 import { ConfirmDialog, Dialog, PromptDialog } from "@/components/Dialog";
 import LoadingStage, { BrandGlyph } from "@/components/LoadingStage";
-import { Button, cx, Kbd, Panel, ProvenanceTag, Spinner } from "@/components/ui";
+import { Button, CalculatedTag, cx, Kbd, Panel, ProvenanceTag, Spinner } from "@/components/ui";
+import { simulationStatus } from "@/lib/analysis/simStatus";
 import { displaySpec } from "@/lib/ai/context";
 import { omittedCount } from "@/lib/ai/history";
 import { deriveTopic, describeTopic } from "@/lib/ai/topic";
@@ -146,8 +147,8 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
   return (
     <div className="animate-enter max-w-[92%] min-w-0 space-y-2" data-message-role="assistant">
       <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium tracking-wide text-faint uppercase">
-        {m.kind === "results" ? "Physics engine" : "AutoDyn assistant"}
-        {m.kind === "results" && <ProvenanceTag provenance="verified" title="Computed deterministically — not AI-generated" />}
+        {m.kind === "results" ? "Simulated results" : "AutoDyn assistant"}
+        {m.kind === "results" && <CalculatedTag label="Calculated by AutoDyn" title="Theoretical estimates from AutoDyn's deterministic physics model — not AI-generated, and not measured or verified results" />}
         {m.kind === "local" && (
           <span className="font-normal tracking-normal normal-case">{m.localKind === "clarify" ? "· clarifying locally, no AI request" : m.localKind === "app_state" ? "· from AutoDyn's current state, no AI request" : "· answered locally, no AI request"}</span>
         )}
@@ -235,8 +236,21 @@ function CurrentConfig() {
   const mod = state.config.modified ? effectiveValues(state.config, "modified") : null;
   const keys: SpecKey[] = ["peakPowerKw", "peakTorqueNm", "curbMassKg", "drivetrain"];
   const diff = modifiedDiff(state.config);
+  const sim = simulationStatus({
+    hasVehicle: !!stock,
+    pendingProposal: Object.values(state.chat.proposals).some((p) => p.status === "pending"),
+    running,
+    hasResult: !!state.result,
+    stale,
+  });
   return (
     <Panel title="Current configuration" subtitle="What the assistant sees. Changes apply only after you approve them.">
+      {sim.phase !== "no_vehicle" && (
+        <p data-testid="sim-status" data-phase={sim.phase} className="mb-3 text-[12.5px] leading-5">
+          <span className={cx("font-medium", sim.tone === "success" ? "text-success" : sim.tone === "warning" ? "text-warning" : "text-ink")}>{sim.label}.</span>{" "}
+          <span className="text-muted">{sim.detail}</span>
+        </p>
+      )}
       {stock && values ? (
         <div className="space-y-3 text-[13px]">
           <div className="flex items-center gap-3">

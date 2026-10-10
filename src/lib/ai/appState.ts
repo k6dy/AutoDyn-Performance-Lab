@@ -111,9 +111,9 @@ export function appStateReply(text: string, ctx: AssistantContext): string | nul
       return nextAction(ctx);
     case "ran": {
       if (r === "none") return `No — nothing has been simulated yet.${pending ? ` The proposal (${pending}) is waiting for your approval; AutoDyn only runs after you apply it.` : ""} ${nextAction(ctx)}`;
-      if (r === "stale") return `Not for the current inputs: the last results are out of date because the configuration changed. ${nextAction(ctx)}`;
+      if (r === "stale") return `Not for the current inputs: the configuration changed after the last run, so those results are outdated. ${nextAction(ctx)}`;
       if (pending) return `Yes for the applied configuration${vehicle ? ` of the ${vehicle}` : ""}, but the pending proposal (${pending}) hasn't been applied or simulated.${headline(ctx)} ${nextAction(ctx)}`;
-      return `Yes — AutoDyn's physics engine has results for the current configuration${vehicle ? ` of the ${vehicle}` : ""}.${headline(ctx)}${snap ? ` These are saved results from ${snap.savedAt.slice(0, 10)}.` : ""}`;
+      return `Yes — simulation complete: AutoDyn has calculated (simulated) results for the current configuration${vehicle ? ` of the ${vehicle}` : ""}, and they are current.${headline(ctx)}${snap ? ` These are saved results from ${snap.savedAt.slice(0, 10)}.` : ""}`;
     }
     case "applied":
       if (pending) return `No — the proposal is still pending: ${pending}. ${nextAction(ctx)}`;

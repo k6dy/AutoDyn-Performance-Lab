@@ -522,11 +522,13 @@ suite.each([360, 390])("AI power proposal at %ipx", (width) => {
       const apply = panel.getByRole("button", { name: /Apply to Simulation/ });
       expect(await apply.isEnabled()).toBe(true);
       await apply.click();
-      await page.getByText(/Physics engine results for 2015 Mercedes-Benz C300/).first().waitFor({ timeout: 15_000 });
+      await page.getByText(/Simulated results for 2015 Mercedes-Benz C300/).first().waitFor({ timeout: 15_000 });
       await page.getByRole("button", { name: /View results/ }).first().click();
       const table = page.getByRole("table", { name: "Computed performance metrics" });
       await table.waitFor({ timeout: 15_000 });
       expect(await table.getByRole("row", { name: /Peak torque/ }).textContent()).toMatch(/273[\s\S]*341/);
+      expect(await table.locator('[data-section="calculated"]').textContent()).toMatch(/Simulated results/);
+      expect(await page.getByText("Calculated by AutoDyn").count()).toBeGreaterThan(0);
       await page.getByTestId("feasibility-modified").waitFor();
       expect(await overflow(page)).toBeLessThanOrEqual(0);
       await shot(page, `${width}-power-results`, true);

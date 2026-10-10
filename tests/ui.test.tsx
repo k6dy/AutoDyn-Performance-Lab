@@ -366,7 +366,7 @@ describe("AI Build Assistant", () => {
     expect(screen.getByText(/No vehicle yet/)).toBeTruthy();
     expect(document.body.textContent).toMatch(/241 hp → 281 hp/);
     fireEvent.click(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0]);
-    expect(await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 })).toBeTruthy();
+    expect(await screen.findByText(/Simulated results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 })).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: /View results/ })[0]);
     const row = await metricRow(/Peak power/);
     expect(row.textContent).toMatch(/241[\s\S]*281/);
@@ -1139,7 +1139,7 @@ describe("Automotive assistant & chat history", () => {
     await screen.findAllByText(/Found the 2015 C300 4MATIC/, undefined, { timeout: 5000 });
     expect(screen.getByText(/No vehicle yet/)).toBeTruthy(); // nothing applied before approval
     fireEvent.click(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0]);
-    await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 });
+    await screen.findByText(/Simulated results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 });
     const link = await screen.findByRole("button", { name: /Open saved analysis/ }, { timeout: 5000 });
     expect(await screen.findByText("Linked analyses")).toBeTruthy();
     await waitFor(async () => expect((await getConversations().list()).items[0].analysisIds).toHaveLength(1));
@@ -1383,14 +1383,30 @@ describe("multipart analysis request in the app", () => {
     const [apply] = await screen.findAllByRole("button", { name: /Apply to Simulation/ });
     expect(apply.hasAttribute("disabled")).toBe(false);
     expect(screen.getByText(/No vehicle yet/)).toBeTruthy(); // nothing applied before approval
-    expect(screen.queryByText(/Physics engine results for/)).toBeNull();
+    expect(screen.queryByText(/Simulated results for/)).toBeNull();
+
+    // Live status before approval.
+    expect(screen.getByTestId("sim-status").dataset.phase).toBe("proposal_pending");
+    expect(screen.getByTestId("sim-status").textContent).toMatch(/Proposal pending\. No simulation has run for it yet\./);
 
     // Approve → the deterministic engine runs with the approved scenario.
     fireEvent.click(apply);
-    expect(await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 })).toBeTruthy();
+    expect(await screen.findByText(/Simulated results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 })).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("sim-status").dataset.phase).toBe("complete"));
+    expect(screen.getByTestId("sim-status").textContent).toMatch(/Analysis complete\. Simulation complete\. Results are current\./);
+    // The earlier answer stays as written (historical); the results message is labeled simulated, never verified.
+    expect(within(chatLog()).getByText(/No — nothing has been simulated yet\./)).toBeTruthy();
+    const resultsMsg = [...chatLog().querySelectorAll('[data-message-role="assistant"]')].find((el) => /Simulated results for/.test(el.textContent ?? ""))!;
+    expect(resultsMsg.textContent).toMatch(/^Simulated resultsCalculated by AutoDyn/);
+    expect(resultsMsg.textContent).not.toMatch(/Physics engine|Verified/);
     fireEvent.click(screen.getAllByRole("button", { name: /View results/ })[0]);
-    expect((await metricRow(/Peak power/)).textContent).toMatch(/241[\s\S]*301/);
-    expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*341/);
+    expect((await metricRow(/Peak power/)).textContent).toMatch(/241[\s\S]*Verified[\s\S]*301[\s\S]*User-provided/);
+    expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*Verified[\s\S]*341[\s\S]*Estimated/);
+    const table = screen.getByRole("table", { name: /Computed performance metrics/ });
+    expect(table.querySelector('[data-section="calculated"]')!.textContent).toMatch(/Simulated results\s*Calculated/);
+    expect((await metricRow(/0–60 mph/)).textContent).not.toMatch(/Verified/);
+    expect(screen.getAllByText(/Simulated results ·/).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("feasibility-modified").textContent).toMatch(/Modeled assessment of the simulated scenario/);
     const zeroTo60 = (await metricRow(/0–60 mph/)).textContent;
     expect(screen.getByTestId("feasibility-stock").querySelector("[data-feasibility]")).toBeTruthy();
     expect(screen.getByTestId("feasibility-modified").querySelector("[data-feasibility]")!.getAttribute("data-feasibility")).toBe("questionable");
@@ -1436,9 +1452,17 @@ describe("multipart analysis request in the app", () => {
     expect(panel().textContent).toMatch(/Power peak speed[\s\S]*5550 rpm → 5800 rpm/);
     expect(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0].hasAttribute("disabled")).toBe(false);
     fireEvent.click(screen.getAllByRole("button", { name: /Apply to Simulation/ })[0]);
-    await screen.findByText(/Physics engine results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 });
+    await screen.findByText(/Simulated results for 2015 Mercedes-Benz C300/, undefined, { timeout: 8000 });
     fireEvent.click(screen.getAllByRole("button", { name: /View results/ })[0]);
     expect((await metricRow(/Peak torque/)).textContent).toMatch(/273[\s\S]*273/); // the stated limit was never changed
+    // Editing an input afterwards: live indicators say the results are outdated; old messages stay historical.
+    fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
+    setField("d-curbMassKg", "-100");
+    fireEvent.click(screen.getByRole("tab", { name: /Assistant/ }));
+    await waitFor(() => expect(screen.getByTestId("sim-status").dataset.phase).toBe("outdated"));
+    expect(screen.getByTestId("sim-status").textContent).toMatch(/Results outdated\. Configuration changed\. Rerun the analysis to update results\./);
+    expect(screen.getAllByRole("region", { name: "Review changes" })[0].textContent).toMatch(/Configuration applied · results outdated/);
+    expect(within(chatLog()).getByText(/Simulated results for 2015 Mercedes-Benz C300/)).toBeTruthy();
   });
 });
 

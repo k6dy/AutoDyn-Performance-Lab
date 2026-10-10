@@ -110,7 +110,7 @@ describe("questions about AutoDyn itself", () => {
     const row = ctx.results!.metrics.find((m) => /0–60/.test(m.metric))!;
     const r = await h.say("Have you run it yet?", ctx);
     expect(r.called).toBe(false);
-    expect(r.body.reply).toMatch(/^Yes — AutoDyn's physics engine has results for the current configuration/);
+    expect(r.body.reply).toMatch(/^Yes — simulation complete: AutoDyn has calculated \(simulated\) results for the current configuration.*they are current/);
     expect(r.body.reply).toContain(row.stock);
     const stale = await h.say("Have you run the simulation?", withResults({ stale: true }));
     expect(stale.body.reply).toMatch(/^Not for the current inputs/);

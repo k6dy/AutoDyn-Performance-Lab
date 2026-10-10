@@ -15,7 +15,7 @@ export function resultsSummary(result: AnalysisResult, units: UnitSystem) {
     const delta = d ? ` (${d.abs > 0 ? "+" : "−"}${Math.abs(d.abs).toFixed(r.digits)}${r.unit ? ` ${r.unit}` : ""})` : "";
     return `${r.label} ${fmt(r.stock, r.digits, r.unit)} → ${fmt(r.modified, r.digits, r.unit)}${delta}`;
   };
-  const head = `Physics engine results for ${vehicleLabel(result.identity)}${result.modified ? ", stock → modified" : ""}:`;
+  const head = `Simulated results for ${vehicleLabel(result.identity)}${result.modified ? ", stock → modified" : ""} — theoretical estimates calculated by AutoDyn, not measured:`;
   const feas = [result.feasibility.stock, result.feasibility.modified]
     .filter((a): a is NonNullable<typeof a> => !!a)
     .map((a) => `- Feasibility (${a.scenario === "stock" ? "Stock" : "Modified"}): ${a.headline}`)

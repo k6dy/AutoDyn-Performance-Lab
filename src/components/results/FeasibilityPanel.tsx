@@ -67,6 +67,7 @@ function Assessment({ a }: { a: FeasibilityAssessment }) {
         <p className="text-[11.5px] text-faint">
           {a.checks.length} constraints evaluated · {counts.pass} satisfied · {counts.caution} need verification · {counts.violation} violated · {counts.not_assessed} not assessed
         </p>
+        <p className="text-[11.5px] text-faint">Modeled assessment of the simulated scenario — it does not establish real-world durability, cooling capacity or drivetrain strength.</p>
       </div>
       <button
         type="button"

@@ -100,6 +100,15 @@ export function ProvenanceTag({ provenance, title, compact, label }: { provenanc
   );
 }
 
+/** Marks AutoDyn's simulation outputs: deterministic theoretical estimates — never "verified". */
+export function CalculatedTag({ label = "Calculated", title = "Theoretical estimate calculated by AutoDyn's deterministic physics model — not a measured or verified result" }: { label?: string; title?: string }) {
+  return (
+    <span title={title} className="inline-flex h-[18px] shrink-0 items-center rounded-sm border border-line-strong px-1.5 text-[10.5px] font-medium tracking-wide text-muted uppercase">
+      {label}
+    </span>
+  );
+}
+
 /** Scenario identity: color plus shape plus text, so it never relies on color alone. */
 export function ScenarioTag({ scenario, label }: { scenario: "stock" | "modified"; label?: string }) {
   const stock = scenario === "stock";

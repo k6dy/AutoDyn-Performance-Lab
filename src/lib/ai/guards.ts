@@ -15,7 +15,7 @@ const PERF_WORDS = /\b(?:0-60|0–60|0 to 60|quarter[- ]mile|trap|top speed|fast
 const MONEY = /\$\s?\d[\d,]*(?:\.\d+)?\s?k?\b|\b\d{2,3}(?:\.\d)?k\b|\b\d{1,3}(?:,\d{3})+\s?(?:dollars|usd)\b/gi;
 
 /** Applies `drop` to every sentence (and table row) of a Markdown reply; empty lines/items disappear. */
-function filterSentences(text: string, drop: (sentence: string) => boolean) {
+export function filterSentences(text: string, drop: (sentence: string) => boolean) {
   let removed = 0;
   const out: string[] = [];
   for (const line of text.split("\n")) {
@@ -65,8 +65,17 @@ const SPEC_FIGURE = /(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?:hp|horsepower|bhp|p
  */
 export function stripFalseAttribution(reply: string, knownText: string) {
   const known = numbersIn(knownText);
-  return filterSentences(reply, (s) => VERIFIED_CLAIM.test(s) && [...s.matchAll(SPEC_FIGURE)].some((m) => !known.some((k) => Math.abs(k - Number(m[1].replace(/,/g, ""))) < 0.51)));
+  return filterSentences(
+    reply,
+    (s) => EPA_SPEC.test(s) || SPEC_PER_EPA.test(s) || (VERIFIED_CLAIM.test(s) && [...s.matchAll(SPEC_FIGURE)].some((m) => !known.some((k) => Math.abs(k - Number(m[1].replace(/,/g, ""))) < 0.51))),
+  );
 }
+
+// EPA lists fuel economy, never engine output: a power/torque figure credited to EPA is always wrong,
+// even when the number itself is correct (it comes from AutoDyn's dataset, not EPA).
+const OUTPUT_FIGURE = String.raw`\d[\d,.]*\s*(?:hp|horsepower|bhp|kw|lb[-·\s]?ft|pound[-\s]feet|n[·.\s]?m)\b`;
+const EPA_SPEC = new RegExp(String.raw`\b(?:EPA|fueleconomy(?:\.gov)?)\b(?:'s)?\s+(?:data\s+|records?\s+|listing\s+)?(?:lists?|rates?|shows?|says|states?|confirms?|reports?|gives?)\b[^.;]{0,50}?${OUTPUT_FIGURE}`, "i");
+const SPEC_PER_EPA = new RegExp(String.raw`${OUTPUT_FIGURE}[^.;]{0,40}?\b(?:per|from|according to|listed by|rated by|confirmed by|verified by)\s+(?:the\s+)?(?:EPA|fueleconomy)`, "i");
 
 const SIM_SUBJECT = /\b(?:feasibility|simulation|simulator|physics engine|autodyn|the (?:engine|model|analysis|assessment))\b/i;
 const SIM_VERB = /\b(?:models?|modell?ed|evaluat\w*|accounts? for|accounted for|checks?|checked|consider(?:s|ed)?|assess(?:es|ed)?|includ(?:es|ed)|factors? in|factored in|captures?|simulat(?:es|ed)|calculat(?:es|ed)|predicts?|verif(?:ies|ied))\b/i;

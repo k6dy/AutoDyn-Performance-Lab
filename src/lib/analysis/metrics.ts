@@ -1,3 +1,4 @@
+import type { Provenance, SpecKey } from "@/lib/domain/types";
 import type { AnalysisResult, ScenarioResult } from "@/lib/physics/analysis";
 import type { RunMetrics } from "@/lib/physics/simulate";
 import { kgToLb, kwToHp, toDisplay, unitLabel, type Quantity, type UnitSystem } from "@/lib/units";
@@ -13,6 +14,10 @@ export type MetricRow = {
   modified: number | null;
   modifiedRange: [number | null, number | null] | null;
   note?: string;
+  /** input: a simulation input shown for reference (with its provenance) · calculated: a simulated output. */
+  kind: "input" | "calculated";
+  stockSource: Provenance | "calculated" | null;
+  modifiedSource: Provenance | "calculated" | null;
 };
 
 type Def = {
@@ -24,14 +29,16 @@ type Def = {
   value: (r: ScenarioResult, m: RunMetrics, u: UnitSystem) => number | null;
   ranged?: boolean;
   note?: string;
+  /** The specification an input row shows (its provenance travels with it). */
+  input?: SpecKey;
 };
 
 const q = (quantity: Quantity) => (u: UnitSystem) => unitLabel(quantity, u);
 
 const DEFS: Def[] = [
-  { id: "power", label: () => "Peak power (rated)", unit: q("power"), digits: 0, better: "higher", value: (r, _m, u) => toDisplay("power", r.inputs.curve.peakPowerW / 1000, u) },
-  { id: "torque", label: () => "Peak torque", unit: q("torque"), digits: 0, better: "higher", value: (r, _m, u) => toDisplay("torque", r.inputs.curve.peakTorqueNm, u) },
-  { id: "mass", label: () => "Test mass", unit: q("mass"), digits: 0, better: "lower", value: (r, _m, u) => toDisplay("mass", r.inputs.massKg, u) },
+  { id: "power", label: () => "Peak power", input: "peakPowerKw", unit: q("power"), digits: 0, better: "higher", value: (r, _m, u) => toDisplay("power", r.inputs.curve.peakPowerW / 1000, u) },
+  { id: "torque", label: () => "Peak torque", input: "peakTorqueNm", unit: q("torque"), digits: 0, better: "higher", value: (r, _m, u) => toDisplay("torque", r.inputs.curve.peakTorqueNm, u) },
+  { id: "mass", label: () => "Test mass", input: "curbMassKg", unit: q("mass"), digits: 0, better: "lower", value: (r, _m, u) => toDisplay("mass", r.inputs.massKg, u) },
   {
     id: "ptw",
     label: (u) => (u === "imperial" ? "Weight-to-power" : "Power-to-weight"),
@@ -64,8 +71,10 @@ const DEFS: Def[] = [
 ];
 
 export function metricRows(result: AnalysisResult, units: UnitSystem): MetricRow[] {
+  const finite = (v: number | null) => (v != null && Number.isFinite(v) ? v : null);
   const range = (r: ScenarioResult, d: Def): [number | null, number | null] | null =>
-    d.ranged ? [d.value(r, r.range.optimistic, units), d.value(r, r.range.conservative, units)] : null;
+    d.ranged ? [finite(d.value(r, r.range.optimistic, units)), finite(d.value(r, r.range.conservative, units))] : null;
+  const source = (r: ScenarioResult, d: Def): MetricRow["stockSource"] => (d.input ? (r.provenance[d.input] ?? null) : "calculated");
   return DEFS.map((d) => ({
     id: d.id,
     label: d.label(units),
@@ -73,10 +82,13 @@ export function metricRows(result: AnalysisResult, units: UnitSystem): MetricRow
     digits: d.digits,
     better: d.better,
     note: d.note,
-    stock: d.value(result.stock, result.stock.metrics, units),
+    stock: finite(d.value(result.stock, result.stock.metrics, units)),
     stockRange: range(result.stock, d),
-    modified: result.modified ? d.value(result.modified, result.modified.metrics, units) : null,
+    modified: result.modified ? finite(d.value(result.modified, result.modified.metrics, units)) : null,
     modifiedRange: result.modified ? range(result.modified, d) : null,
+    kind: d.input ? "input" : "calculated",
+    stockSource: source(result.stock, d),
+    modifiedSource: result.modified ? source(result.modified, d) : null,
   }));
 }
 

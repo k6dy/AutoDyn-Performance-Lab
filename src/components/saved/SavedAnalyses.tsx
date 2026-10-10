@@ -102,6 +102,7 @@ function SavedRow({
             {" · "}
             {s.scenarios === "compare" ? "Stock vs Modified" : "Stock only"}
             {s.changes.length > 0 && ` · ${s.changes.length} change${s.changes.length > 1 ? "s" : ""}`}
+            {" · Simulated results"}
           </p>
         </div>
 

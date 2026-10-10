@@ -6,6 +6,7 @@ import { IssueList } from "@/components/manual/ManualSetup";
 import LoadingStage from "@/components/LoadingStage";
 import { Button, cx, ProvenanceTag } from "@/components/ui";
 import { applyProposal, evaluateProposal, proposalVehicle } from "@/lib/ai/apply";
+import { simulationStatus, type SimPhase } from "@/lib/analysis/simStatus";
 import type { ProposedChange } from "@/lib/ai/types";
 import { NUMERIC_FIELDS, SPEC_LABEL, SURFACE_OPTIONS } from "@/lib/domain/fields";
 import { effectiveValues } from "@/lib/domain/scenario";
@@ -40,6 +41,16 @@ function show(value: number | string | null, quantity: Quantity | undefined, uni
 }
 
 const issueKey = (i: { scenario: string; key?: string; message: string }) => `${i.scenario}|${i.key}|${i.message}`;
+
+/** Live status of an applied proposal (the shared configuration may have changed or run since). */
+const APPLIED_STATUS: Record<SimPhase, string> = {
+  running: "Configuration applied · analysis running…",
+  complete: "Configuration applied · analysis complete — results are current.",
+  outdated: "Configuration applied · results outdated — the configuration changed since; rerun the analysis.",
+  configured: "Configuration applied · not simulated yet.",
+  no_vehicle: "Applied · the workspace has since been reset.",
+  proposal_pending: "Configuration applied · not simulated yet.",
+};
 
 /** Parameters worth naming as unchanged — never the whole advanced list. */
 const RELEVANT: NumericSpecKey[] = ["peakPowerKw", "peakTorqueNm", "curbMassKg", "peakTorqueRpm", "peakPowerRpm"];
@@ -393,11 +404,7 @@ export default function ProposalPanel({ ps }: { ps: ProposalState }) {
               ? "Proposal pending · not applied · not simulated."
               : "Proposal pending · not applied · not simulated. Apply to Simulation runs the physics engine with these values; Edit Manually applies them and opens Manual Setup."
             : ps.status === "applied"
-              ? running
-                ? "Applied · running the physics engine…"
-                : state.result && !stale
-                  ? "Applied · simulated — the results are current."
-                  : "Applied to the shared configuration · not simulated yet."
+              ? APPLIED_STATUS[simulationStatus({ hasVehicle: !!state.config.stock, pendingProposal: false, running, hasResult: !!state.result, stale }).phase]
               : ps.status === "cancelled"
                 ? "Cancelled · nothing was applied or simulated."
                 : "Superseded · nothing from this proposal was applied."}

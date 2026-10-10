@@ -2,14 +2,14 @@
 
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, Download, FileJson, History, Info, Pencil, Printer, RefreshCw, Save, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { ChevronDown } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScenarioTag } from "@/components/ui";
 import { PromptDialog } from "@/components/Dialog";
 import LoadingStage from "@/components/LoadingStage";
 import { NewAnalysisButton, SaveIndicator } from "@/components/Workspace";
 import FeasibilityPanel from "@/components/results/FeasibilityPanel";
 import { AccelChart, CurveChart, MassSweepChart, SensitivityChart, SpeedTimeChart } from "@/components/results/Charts";
-import { AnimatedNumber, Button, cx, Notice, Panel, ProvenanceTag, Segmented, Spinner } from "@/components/ui";
+import { AnimatedNumber, Button, CalculatedTag, cx, Notice, Panel, ProvenanceTag, Segmented, Spinner } from "@/components/ui";
 import { explainAnalysis, type Finding } from "@/lib/analysis/explain";
 import { buildCsvReport, buildJsonReport, buildTraceCsv } from "@/lib/analysis/export";
 import { download } from "@/lib/download";
@@ -79,20 +79,43 @@ function MetricsTable({ result, view, units }: { result: AnalysisResult; view: R
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} className="border-b border-line/60 last:border-0 hover:bg-raised/50">
-              <th scope="row" className="px-4 py-2.5 font-normal text-muted">
-                {r.label} {r.unit && <span className="text-faint">({r.unit})</span>}
-                {r.note && <div className="text-[11px] text-faint">{r.note}</div>}
-              </th>
-              {showStock && <td className="px-4 py-2.5"><Value v={r.stock} digits={r.digits} range={r.stockRange} /></td>}
-              {showMod && <td className="px-4 py-2.5"><Value v={r.modified} digits={r.digits} range={r.modifiedRange} /></td>}
-              {showDelta && <td className="px-4 py-2.5"><Delta row={r} /></td>}
-            </tr>
+          {rows.map((r, i) => (
+            <Fragment key={r.id}>
+              {(i === 0 || rows[i - 1].kind !== r.kind) && (
+                <tr className="border-b border-line/60 bg-raised/40" data-section={r.kind}>
+                  <td colSpan={1 + Number(showStock) + Number(showMod) + Number(showDelta)} className="px-4 py-1.5 text-[11px] font-medium tracking-wide text-faint uppercase">
+                    <span className="inline-flex items-center gap-2">
+                      {r.kind === "input" ? "Inputs (source shown per value)" : "Simulated results"}
+                      {r.kind === "calculated" && <CalculatedTag />}
+                    </span>
+                  </td>
+                </tr>
+              )}
+              <tr className="border-b border-line/60 last:border-0 hover:bg-raised/50">
+                <th scope="row" className="px-4 py-2.5 font-normal text-muted">
+                  {r.label} {r.unit && <span className="text-faint">({r.unit})</span>}
+                  {r.note && <div className="text-[11px] text-faint">{r.note}</div>}
+                </th>
+                {showStock && (
+                  <td className="px-4 py-2.5">
+                    <Value v={r.stock} digits={r.digits} range={r.stockRange} />
+                    {r.kind === "input" && r.stockSource && r.stockSource !== "calculated" && <span className="ml-2 align-middle"><ProvenanceTag provenance={r.stockSource} /></span>}
+                  </td>
+                )}
+                {showMod && (
+                  <td className="px-4 py-2.5">
+                    <Value v={r.modified} digits={r.digits} range={r.modifiedRange} />
+                    {r.kind === "input" && r.modifiedSource && r.modifiedSource !== "calculated" && <span className="ml-2 align-middle"><ProvenanceTag provenance={r.modifiedSource} /></span>}
+                  </td>
+                )}
+                {showDelta && <td className="px-4 py-2.5"><Delta row={r} /></td>}
+              </tr>
+            </Fragment>
           ))}
         </tbody>
       </table>
       <p className="border-t border-line px-4 py-2 text-[11.5px] leading-4 text-faint">
+        Simulated results are theoretical estimates calculated by AutoDyn&apos;s deterministic physics model — not measured or verified performance. &quot;Verified&quot; applies only to sourced specifications.
         Small figures beside values are the indicative range from input uncertainty (verified ±2–3%, user ±5%, estimates wider).
         0–60 {result.conditions.rollout ? "uses" : "does not use"} 1-ft rollout.
       </p>
@@ -278,7 +301,7 @@ function SnapshotBanner() {
             calculation may differ. Recalculating saves a new analysis and keeps this snapshot.
           </>
         ) : (
-          <>These imported results don&apos;t match what the current engine computes for their inputs. Recalculate to see verified results.</>
+          <>These imported results don&apos;t match what the current engine computes for their inputs. Recalculate to see results from the current engine.</>
         )}
       </Notice>
     );
@@ -332,7 +355,10 @@ export default function ResultsWorkspace() {
     <div className="space-y-5">
       <div className="print-plain flex flex-wrap items-end justify-between gap-4 rounded-lg border border-line bg-surface px-4 py-4 sm:px-5">
         <div className="min-w-0">
-          <p className="text-xs text-faint">Analysis · {new Date(result.createdAt).toLocaleString()}</p>
+          <p className="flex flex-wrap items-center gap-2 text-xs text-faint">
+            <span>Simulated results · {new Date(result.createdAt).toLocaleString()}</span>
+            <CalculatedTag label="Calculated by AutoDyn" />
+          </p>
           <h1 className="mt-0.5 text-xl font-semibold tracking-tight">{vehicleLabel(result.identity)}</h1>
           <p className="mt-1 text-[13px] text-muted">
             {result.modified ? "Stock vs. Modified" : "Stock"} · {result.identity.sourceDetail}

@@ -82,8 +82,8 @@ describe("Markdown rendering in the chat", () => {
   });
 
   it("deterministic results summaries keep their list layout", () => {
-    const el = view("Physics engine results for 2015 Mercedes-Benz C300, stock → modified:\n- 0–60 mph 6.1 s → 5.6 s (−0.5 s)\n- Quarter mile 14.6 s → 14.1 s");
-    expect(el.querySelector("p")!.textContent).toMatch(/^Physics engine results/);
+    const el = view("Simulated results for 2015 Mercedes-Benz C300, stock → modified:\n- 0–60 mph 6.1 s → 5.6 s (−0.5 s)\n- Quarter mile 14.6 s → 14.1 s");
+    expect(el.querySelector("p")!.textContent).toMatch(/^Simulated results/);
     expect(el.querySelectorAll("li")).toHaveLength(2);
   });
 

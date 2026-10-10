@@ -270,5 +270,11 @@ export function simulateRun(inp: ResolvedInputs, opts: Options = {}): RunResult 
   }
   m.peakAccelG = peakA / G;
 
-  return { metrics: m, samples };
+  // Defensive: validation blocks degenerate inputs, but a non-finite value must never reach results,
+  // charts or saved records. Valid runs are unaffected.
+  for (const k of Object.keys(m) as (keyof RunMetrics)[]) {
+    const val = m[k];
+    if (typeof val === "number" && !Number.isFinite(val)) (m as Record<string, unknown>)[k] = k === "peakAccelG" || k === "shiftsTo60" ? 0 : null;
+  }
+  return { metrics: m, samples: samples.filter((s) => Number.isFinite(s.v) && Number.isFinite(s.x) && Number.isFinite(s.a)) };
 }

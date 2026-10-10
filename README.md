@@ -87,6 +87,18 @@ Stored locally in IndexedDB (stores `chats` and `chatMessages`, separate from sa
 
 `src/lib/feasibility` classifies each scenario as **Feasible**, **Questionable**, **Non-feasible** or **Insufficient data** from deterministic checks (data provenance, power/torque consistency, specific output, traction bound vs. drive force, grip level, drag area, speed range, acceleration envelope, optional claims and component ratings, model validity range). Non-feasible always names the violated bound (e.g. a claimed 0–60 below the traction-limited minimum, a claimed top speed above the power-limited maximum, torque above a stated driveline rating). Invalid inputs are input errors, never a feasibility status. No AI is involved; the assistant only explains the result.
 
+### Data provenance and simulated results
+
+Every value carries one label, used the same way in Manual Setup, the assistant, Review changes, Results, Saved Analyses and exports:
+
+- **Verified** — a sourced specification (AutoDyn's vehicle dataset). EPA data is a separate, verified *external* source for fuel economy only; it never verifies horsepower, torque or weight.
+- **User-provided** — values you entered or requested (e.g. "+60 hp").
+- **Estimated** — AutoDyn modeling assumptions and defaults (e.g. the proportionally scaled torque curve for a horsepower-only change, drag or gearing estimates).
+- **Calculated** — outputs of AutoDyn's deterministic physics model (0–60, quarter mile, top speed, charts). These are **simulated, theoretical estimates** — never labeled verified.
+- **Unavailable** — not reliably known; AutoDyn asks for it instead of guessing.
+
+A vehicle named in a chat message is resolved against the dataset *before* Gemini answers, with the same matcher Review changes uses, and its specifications are passed as structured data — so the reply cannot contradict the review panel. Live status indicators (Proposal pending · Configuration applied · Analysis running · Analysis complete · Results outdated) always reflect the current state; earlier chat messages stay as written.
+
 ### Checking the AI connection
 
 `GET /api/assistant/health` reports `configured`, `env` (presence of `GEMINI_API_KEY` / `GEMINI_MODEL`, never values), `model`, `deployment` (`environment / branch / commit / url / project`), configuration notes (including misnamed variables such as `GOOGLE_API_KEY`) and the last real provider result. It never calls Google.
@@ -108,7 +120,7 @@ Expect `"probe":"generation"` and `"provider":{"status":"ok",...}`. Protected Pr
 
 Vercel attaches environment variables when a deployment is **created**: variables added later never reach existing deployments. Several Vercel projects (`autodyn`, `auto-dyn-performance`, `autodynperformance`) build this repository — the variables must exist on the project that serves the URL being tested, for the **Preview** environment (all branches or `autodyn-v2`), and that branch must be redeployed afterwards.
 
-**Rate limiting (audited):** 5 requests/min and 40/day per client, 300/day overall (env-configurable), plus duplicate-request IDs, an 800-character message limit, bounded history and context, a 64 KB body limit, a 1,024-token output cap, a 15 s provider timeout and no automatic retries. After a rate-limit or quota response the composer pauses. Without `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` these counters are **in-memory per serverless instance** — best-effort, not a reliable global limit. Upstash's free tier makes them shared; it is never enabled automatically. The real cost guarantee is a Gemini project without billing (requests beyond the free quota fail with 429, which the app reports).
+**Rate limiting (audited):** 5 requests/min and 40/day per client, 300/day overall (env-configurable), plus duplicate-request IDs, an 800-character message limit, bounded history and context, a 64 KB body limit, per-answer output budgets of 1,024 / 2,048 / 4,096 tokens (ceiling `AI_MAX_OUTPUT_TOKENS`, at most 8,192), a 15 s provider timeout and no automatic retries. After a rate-limit or quota response the composer pauses. Clients are keyed by a hash of the client IP from the `x-forwarded-for` header set by Vercel. Without `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` these counters are **in-memory per serverless instance** — best-effort, not a reliable global limit. Upstash's free tier makes them shared; it is never enabled automatically. The real cost guarantee is a Gemini project without billing (requests beyond the free quota fail with 429, which the app reports).
 
 ## Scripts
 
