@@ -57,7 +57,9 @@ export type AssistantRequest = z.infer<typeof requestSchema>;
 
 export const modelOutputSchema = z.object({
   intent: z.enum(AI_INTENTS),
-  reply: z.string().max(4000),
+  // Accepted generously and clipped at a paragraph boundary afterwards (sanitizeReply), so a long
+  // answer is shortened instead of discarded as invalid.
+  reply: z.string().max(20000),
   vehicle: z.object({
     mentioned: z.boolean(),
     year: z.number().int().nullable(),
@@ -91,7 +93,10 @@ export const modelOutputJsonSchema = {
   type: "object",
   properties: {
     intent: { type: "string", enum: [...AI_INTENTS], description: "What the user wants. general = automotive knowledge question that needs no simulation; other = outside automotive scope." },
-    reply: { type: "string", description: "Concise plain-text answer (no markdown tables, no HTML)." },
+    reply: {
+      type: "string",
+      description: "The answer, sized to the RESPONSE GUIDE, in the Markdown subset from the answer style (paragraphs separated by blank lines, lists, sparing bold, ### headings only for multi-section answers, small tables). Real newlines; no HTML.",
+    },
     vehicle: {
       type: "object",
       description: "Vehicle the user explicitly named in this message. mentioned=false if none or if they mean the current vehicle.",

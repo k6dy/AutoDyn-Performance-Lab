@@ -3,6 +3,7 @@
 import { Archive, ArrowUp, CarFront, Cog, Gauge, History, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, Pencil, Play, PlugZap, RotateCcw, Scale, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import ChatHistory from "@/components/assistant/ChatHistory";
+import Markdown from "@/components/assistant/Markdown";
 import ProposalPanel from "@/components/assistant/ProposalPanel";
 import { ConfirmDialog, Dialog, PromptDialog } from "@/components/Dialog";
 import LoadingStage, { BrandGlyph } from "@/components/LoadingStage";
@@ -22,36 +23,6 @@ import { useApp, type AiStatus } from "@/state/AppProvider";
 import type { ChatMessage, ProposalState } from "@/state/reducer";
 
 const PROBED_KEY = "autodyn:ai-probed";
-
-/** Renders untrusted model text as plain paragraphs and bullet lists (never as HTML). */
-function PlainText({ text }: { text: string }) {
-  return (
-    <div className="space-y-2">
-      {text.split(/\n{2,}/).map((b, i) => {
-        const lines = b.split("\n").filter((l) => l.trim());
-        const bullets = lines.filter((l) => /^\s*[-•*]\s+/.test(l));
-        if (bullets.length && bullets.length >= lines.length - 1) {
-          const head = lines.length > bullets.length ? lines[0] : null;
-          return (
-            <div key={i}>
-              {head && <p>{head}</p>}
-              <ul className="mt-1 list-disc space-y-1 pl-4">
-                {bullets.map((l, j) => (
-                  <li key={j}>{l.replace(/^\s*[-•*]\s+/, "")}</li>
-                ))}
-              </ul>
-            </div>
-          );
-        }
-        return (
-          <p key={i} className="whitespace-pre-line">
-            {b}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
 
 export function statusText(s: AiStatus) {
   if (s.phase === "checking") return "Checking AI connection…";
@@ -173,7 +144,7 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
     setLinkState(r.ok ? "idle" : "missing");
   };
   return (
-    <div className="animate-enter max-w-[92%] space-y-2" data-message-role="assistant">
+    <div className="animate-enter max-w-[92%] min-w-0 space-y-2" data-message-role="assistant">
       <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium tracking-wide text-faint uppercase">
         {m.kind === "results" ? "Physics engine" : "AutoDyn assistant"}
         {m.kind === "results" && <ProvenanceTag provenance="verified" title="Computed deterministically — not AI-generated" />}
@@ -182,7 +153,7 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
         )}
       </div>
       <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f5a8a8]" : "text-ink", m.kind === "results" && "num text-[13px]")}>
-        <PlainText text={m.text} />
+        <Markdown text={m.text} />
       </div>
       {m.followUp && m.followUp !== m.text && <p className="border-l-2 border-accent pl-3 text-[13.5px] leading-5 text-ink">{m.followUp}</p>}
       {m.notices?.map((n) => (

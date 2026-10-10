@@ -29,6 +29,9 @@ const OTHER_CONFIRM = /\b(?:animal|cat|creature|wild|zoo|second one|the second|l
 /** The message builds on the current subject rather than starting a new one. */
 const REFERS = /\b(?:it|its|that|this|those|these|they|them|their|one|ones|same|also|too|either|both|models?|versions?|variants?|trims?)\b|^\s*(?:what|how) about\b|^\s*(?:and|but|so)\b/i;
 
+/** True when a message refers back to what is already being discussed ("which ones…", "what about…"). */
+export const refersBack = (text: string) => REFERS.test(text);
+
 const empty = (): Topic => ({ makes: [], models: [], years: [], engines: [], components: [] });
 const uniq = <T,>(xs: T[], n = 4) => [...new Set(xs)].slice(0, n);
 

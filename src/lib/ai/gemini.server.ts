@@ -1,6 +1,7 @@
 import "server-only";
-import { ApiError, GoogleGenAI } from "@google/genai";
+import { ApiError, FinishReason, GoogleGenAI } from "@google/genai";
 import { buildUserTurn, SYSTEM_INSTRUCTION } from "@/lib/ai/prompt";
+import { OUTPUT_BUDGET } from "@/lib/ai/responsePlan";
 import { modelOutputJsonSchema, modelOutputSchema } from "@/lib/ai/schema";
 import type { ProviderCode, ProviderHealth } from "@/lib/ai/types";
 
@@ -10,7 +11,8 @@ import type { ProviderCode, ProviderHealth } from "@/lib/ai/types";
 export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 export const DEFAULT_FALLBACK_MODEL = "gemini-3.1-flash-lite";
 
-export type ModelCallResult = { ok: true; text: string; model?: string } | { ok: false; code: ProviderCode; status?: number; reason?: string };
+/** truncated: the provider stopped at the output-token ceiling, so the JSON may be incomplete. */
+export type ModelCallResult = { ok: true; text: string; model?: string; truncated?: boolean } | { ok: false; code: ProviderCode; status?: number; reason?: string };
 
 export type ModelCaller = (contents: unknown[], signal: AbortSignal, opts?: { maxOutputTokens?: number; model?: string }) => Promise<ModelCallResult>;
 
@@ -36,12 +38,14 @@ export function aiConfig() {
   const model = normalizeModel(rawModel) ?? DEFAULT_GEMINI_MODEL;
   const fallbackRaw = process.env.GEMINI_FALLBACK_MODEL;
   const fallbackModel = fallbackRaw === "none" ? null : (normalizeModel(fallbackRaw) ?? DEFAULT_FALLBACK_MODEL);
+  const maxOutputTokens = num(process.env.AI_MAX_OUTPUT_TOKENS, OUTPUT_BUDGET.detailed, 512, 8192);
   return {
     apiKey,
     model,
     fallbackModel: fallbackModel && fallbackModel !== model ? fallbackModel : null,
-    maxOutputTokens: num(process.env.AI_MAX_OUTPUT_TOKENS, 1024, 256, 2048),
-    timeoutMs: num(process.env.AI_TIMEOUT_MS, 15000, 3000, 25000),
+    /** Ceiling for any single request; each request asks only for its depth's budget (OUTPUT_BUDGET). */
+    maxOutputTokens,
+    timeoutMs: num(process.env.AI_TIMEOUT_MS, 20000, 3000, 25000),
     /** Non-secret configuration findings, safe to show. */
     configNotes: [
       rawKey && rawKey !== rawKey.trim() ? "GEMINI_API_KEY has leading/trailing whitespace (ignored)." : null,
@@ -50,6 +54,9 @@ export function aiConfig() {
       rawModel && !normalizeModel(rawModel) ? `GEMINI_MODEL value is not a valid model id; using ${DEFAULT_GEMINI_MODEL}.` : null,
       rawModel && normalizeModel(rawModel) && normalizeModel(rawModel) !== rawModel ? `GEMINI_MODEL normalized to “${normalizeModel(rawModel)}”.` : null,
       !rawModel ? `GEMINI_MODEL not set; using default ${DEFAULT_GEMINI_MODEL}.` : null,
+      maxOutputTokens < OUTPUT_BUDGET.detailed
+        ? `AI_MAX_OUTPUT_TOKENS=${maxOutputTokens} is below the ${OUTPUT_BUDGET.detailed}-token budget for detailed answers, so long answers may be shortened. Remove it to use the default.`
+        : null,
       ...misnamedKeyNotes(!!apiKey),
     ].filter((x): x is string => !!x),
     env: { GEMINI_API_KEY: !!apiKey, GEMINI_MODEL: !!normalizeModel(rawModel) },
@@ -159,24 +166,26 @@ async function callOnce(key: string, model: string, contents: unknown[], signal:
       },
     });
     const text = res.text;
-    if (!text) return { ok: false, code: "invalid_output", reason: String(res.candidates?.[0]?.finishReason ?? "empty response") };
-    return { ok: true, text, model };
+    const finish = res.candidates?.[0]?.finishReason;
+    if (!text) return { ok: false, code: "invalid_output", reason: String(finish ?? "empty response") };
+    return { ok: true, text, model, ...(finish === FinishReason.MAX_TOKENS ? { truncated: true } : {}) };
   } catch (err) {
     const c = classifyProviderError(err, signal.aborted, key);
     return { ok: false, code: c.code, status: c.status, reason: c.reason };
   }
 }
 
-/** Real Gemini caller using structured JSON output with a bounded token budget. */
+/** Real Gemini caller using structured JSON output with a bounded token budget (never above the configured ceiling). */
 export const geminiCaller: ModelCaller = async (contents, signal, opts) => {
   const cfg = aiConfig();
   if (!cfg.apiKey) return { ok: false, code: "not_configured" };
   const started = Date.now();
   const model = opts?.model ?? cfg.model;
-  let result = await callOnce(cfg.apiKey, model, contents, signal, opts?.maxOutputTokens ?? cfg.maxOutputTokens, cfg.timeoutMs);
+  const budget = Math.min(opts?.maxOutputTokens ?? cfg.maxOutputTokens, cfg.maxOutputTokens);
+  let result = await callOnce(cfg.apiKey, model, contents, signal, budget, cfg.timeoutMs);
   if (!result.ok && (result.code === "model_unavailable" || result.code === "model_unsupported") && cfg.fallbackModel && !opts?.model && !signal.aborted) {
     console.error(`[assistant] provider_error ${JSON.stringify({ code: result.code, status: result.status, reason: result.reason, model, fallback: cfg.fallbackModel })}`);
-    result = await callOnce(cfg.apiKey, cfg.fallbackModel, contents, signal, opts?.maxOutputTokens ?? cfg.maxOutputTokens, cfg.timeoutMs);
+    result = await callOnce(cfg.apiKey, cfg.fallbackModel, contents, signal, budget, cfg.timeoutMs);
   }
   if (!result.ok) console.error(`[assistant] provider_error ${JSON.stringify({ code: result.code, status: result.status, reason: result.reason, model })}`);
   record(result, Date.now() - started, "request", cfg.model);
@@ -217,7 +226,7 @@ export async function probeProvider(caller: ModelCaller = geminiCaller, opts: { 
           ],
         },
       ];
-      let r = await caller(contents, controller.signal, { maxOutputTokens: cfg.maxOutputTokens });
+      let r = await caller(contents, controller.signal, { maxOutputTokens: OUTPUT_BUDGET.brief });
       if (r.ok) {
         let valid = false;
         try {

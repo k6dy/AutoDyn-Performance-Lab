@@ -17,6 +17,7 @@ import type { SpecSet } from "@/lib/domain/types";
 import {
   getConversations,
   MAX_CONVERSATION_MESSAGES,
+  MAX_MESSAGE_TEXT,
   MemoryConversations,
   newConversationId,
   setConversations,
@@ -160,7 +161,7 @@ async function withChats<T>(fn: (repo: ConversationRepository) => Promise<T>): P
 }
 
 const toStored = (m: ChatMessage): StoredMessage => {
-  const out: StoredMessage = { id: m.id, role: m.role, text: m.text.slice(0, 4000), createdAt: m.createdAt };
+  const out: StoredMessage = { id: m.id, role: m.role, text: m.text.slice(0, MAX_MESSAGE_TEXT), createdAt: m.createdAt };
   if (m.kind) out.kind = m.kind;
   if (m.localKind) out.localKind = m.localKind;
   if (m.notices?.length) out.notices = m.notices.slice(0, 10);

@@ -156,12 +156,89 @@ export function buildChanges(output: ModelOutput, message: string) {
   return { changes, rejected };
 }
 
-export function sanitizeReply(text: string) {
+/** A trailing heading, or a table header and separator, left without content after a cut. */
+const DANGLING = /\n+(?:#{1,6}\s[^\n]*|[^\n]*\|[^\n]*\n\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?)\s*$/;
+
+/**
+ * Normalizes model text while keeping its line structure (paragraphs, lists, tables). Replies are
+ * rendered as React text, never HTML; tag-like markup is still removed as defense in depth, while
+ * comparisons such as "boost < 10 psi" survive.
+ */
+export function cleanReply(text: string) {
   return text
+    .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
-    .replace(/<[^>]*>/g, "")
-    .trim()
-    .slice(0, AI_LIMITS.maxReplyChars);
+    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<\/?[a-z][a-z0-9-]*(?:\s[^<>]*)?\/?>/gi, "")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Shortens text at the last paragraph, line or sentence end within `max` (never mid-word). */
+export function clipText(text: string, max: number): { text: string; clipped: boolean } {
+  if (text.length <= max) return { text, clipped: false };
+  const cut = text.slice(0, max);
+  const para = cut.lastIndexOf("\n\n");
+  const line = cut.lastIndexOf("\n");
+  const sentence = Math.max(...[". ", "! ", "? ", ".\n"].map((p) => cut.lastIndexOf(p)));
+  let out: string;
+  if (para >= max * 0.5) out = cut.slice(0, para);
+  else if (line >= max * 0.6) out = cut.slice(0, line);
+  else if (sentence >= max * 0.5) out = cut.slice(0, sentence + 1);
+  else out = `${cut.slice(0, Math.max(cut.lastIndexOf(" "), max * 0.8))}…`;
+  // A heading or table header left without its content is dropped.
+  out = out.replace(DANGLING, "").trimEnd();
+  return { text: out, clipped: true };
+}
+
+export function sanitizeReply(text: string) {
+  return clipText(cleanReply(text), AI_LIMITS.maxReplyChars).text;
+}
+
+/**
+ * Recovers the reply from structured output that stopped at the output-token limit: the JSON is
+ * incomplete, but the "reply" string up to the cut is usable. Returns null when there is none.
+ */
+export function salvageReply(raw: string): string | null {
+  const start = /"reply"\s*:\s*"/.exec(raw);
+  if (!start) return null;
+  const ESC: Record<string, string> = { n: "\n", t: "\t", r: "", b: "", f: "", '"': '"', "\\": "\\", "/": "/" };
+  let out = "";
+  for (let i = start.index + start[0].length; i < raw.length; ) {
+    const ch = raw[i];
+    if (ch === '"') break;
+    if (ch === "\\") {
+      const next = raw[i + 1];
+      if (next === undefined) break;
+      if (next === "u") {
+        const hex = raw.slice(i + 2, i + 6);
+        if (!/^[0-9a-f]{4}$/i.test(hex)) break;
+        out += String.fromCharCode(parseInt(hex, 16));
+        i += 6;
+        continue;
+      }
+      out += ESC[next] ?? next;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out || null;
+}
+
+/** The completed part of a cut-off reply: up to its last finished sentence or line. */
+export function completedPart(text: string): string {
+  const t = cleanReply(text);
+  let done = t;
+  if (!/[.!?:)]$/.test(t)) {
+    const sentence = Math.max(...[". ", "! ", "? "].map((p) => t.lastIndexOf(p)));
+    const end = Math.max(sentence + 1, t.lastIndexOf("\n"));
+    done = end > 0 ? t.slice(0, end) : `${t}…`;
+  }
+  return clipText(done.trimEnd(), AI_LIMITS.maxReplyChars).text.replace(DANGLING, "").trimEnd();
 }
 
 const FIGURE = /(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(hp|horsepower|bhp|kw|lb[-·\s]?ft|pound[-\s]feet|n[·.\s]?m|lbs?|pounds|kg|mph|km\/h|kph|seconds|secs?|s\b|rpm)/gi;

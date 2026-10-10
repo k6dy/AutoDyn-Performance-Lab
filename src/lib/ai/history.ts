@@ -21,8 +21,27 @@ const ANCHOR_REPLY_CHARS = 600;
 const eligible = (m: Msg) =>
   !m.failed && !m.errorCode && m.kind !== "results" && (m.kind !== "local" || m.localKind === "clarify") && m.text.trim().length > 0;
 
+/**
+ * Formatted answers are sent back as context in a compact form — table rules, heading marks and
+ * emphasis removed, blank lines collapsed — and shortened at a sentence or line end, so detailed
+ * replies don't crowd earlier turns out of the history budget.
+ */
+export function compactTurn(text: string, max: number = AI_LIMITS.maxHistoryChars): string {
+  const plain = text
+    .replace(/^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/gm, "")
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n")
+    .trim();
+  if (plain.length <= max) return plain;
+  const cut = plain.slice(0, max - 1);
+  const end = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(". "));
+  return `${end >= max * 0.6 ? cut.slice(0, end + 1).trimEnd() : cut}…`;
+}
+
 export function historyFor(messages: Msg[]): Turn[] {
-  const list: Turn[] = messages.filter(eligible).map((m) => ({ role: m.role, text: m.text }));
+  const list: Turn[] = messages.filter(eligible).map((m) => ({ role: m.role, text: m.role === "assistant" ? compactTurn(m.text) : m.text }));
   let budget = AI_LIMITS.maxHistoryTotalChars;
   const picked = new Map<number, Turn>();
 
@@ -35,7 +54,7 @@ export function historyFor(messages: Msg[]): Turn[] {
     budget -= user.text.length;
     const reply = list[anchor + 1];
     if (reply?.role === "assistant" && anchor + 1 < windowStart) {
-      const r = { role: "assistant" as const, text: reply.text.slice(0, ANCHOR_REPLY_CHARS) };
+      const r = { role: "assistant" as const, text: compactTurn(reply.text, ANCHOR_REPLY_CHARS) };
       picked.set(anchor + 1, r);
       budget -= r.text.length;
     }

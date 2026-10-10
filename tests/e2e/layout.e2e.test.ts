@@ -244,7 +244,7 @@ suite.each([360, 390])("saved analyses at %ipx", (width) => {
   }, 90_000);
 });
 
-async function mockAssistant(page: Page) {
+async function mockAssistant(page: Page, reply = "A turbocharger uses exhaust energy to spin a compressor that forces more air into the engine.") {
   let posts = 0;
   const status = { configured: true, model: "gemini-3.5-flash-lite", deployment: { environment: "preview", branch: "autodyn-v2", commit: "abc1234" }, provider: { status: "ok", model: "gemini-3.5-flash-lite", checkedAt: new Date().toISOString(), latencyMs: 5, source: "access" } };
   await page.route(/\/api\/assistant(\/health)?(\?.*)?$/, async (route) => {
@@ -255,7 +255,7 @@ async function mockAssistant(page: Page) {
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ok: true, requestId: body.requestId, reply: "A turbocharger uses exhaust energy to spin a compressor that forces more air into the engine.", followUpQuestion: null, proposal: null, suggestedAction: null, notices: [] }),
+      body: JSON.stringify({ ok: true, requestId: body.requestId, reply, followUpQuestion: null, proposal: null, suggestedAction: null, notices: [] }),
     });
   });
   return () => posts;
@@ -330,6 +330,75 @@ suite("conversation context in a real browser", () => {
       await send(page, "Do cows hibernate?");
       await page.getByText("I'm here for cars, parts, and vehicle performance. Ask me something automotive-related.").waitFor();
       expect(posts()).toBe(2);
+      expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
+});
+
+const FORMATTED = [
+  "They do different jobs, so neither replaces the other.",
+  "",
+  "### 1. Wastegate",
+  "Sits on the **exhaust** side and bypasses gas around the turbine to cap boost at the target pressure.",
+  "",
+  "### 2. Blow-off valve",
+  "- Sits on the **intake** side",
+  "- Vents pressurized air when the throttle closes",
+  "- Protects the compressor from surge",
+  "",
+  "### 3. Which matters more?",
+  "| Component | Side | Without it | Typical failure symptom |",
+  "|---|---|---|---|",
+  "| Wastegate | Exhaust turbine housing | Boost rises uncontrolled (overboost) | Boost spikes, limp mode, knock |",
+  "| Blow-off valve | Intake charge pipe | Compressor surge on lift-off | Flutter noise, slower spool-up |",
+  "",
+  '<img src="x" onerror="window.__xss=1"><script>window.__xss=2</script>',
+].join("\n");
+
+suite.each([360, 1366])("formatted assistant answers at %ipx", (width) => {
+  it("render headings, lists and a contained table; survive a reload; never execute markup", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const { page, ctx, logs } = await newPage(width);
+    try {
+      if (width > 1000) await page.setViewportSize({ width, height: 900 });
+      await mockAssistant(page, FORMATTED);
+      await page.getByRole("tab", { name: /Assistant/ }).first().click();
+      await send(page, "What's a wastegate, what's a blow-off valve, and which one is more important?");
+      const answer = page.locator('[data-message-role="assistant"] [data-markdown]').last();
+      await answer.locator("h3").nth(2).waitFor();
+      const check = async () => {
+        expect(await answer.locator("h3").allTextContents()).toEqual(["1. Wastegate", "2. Blow-off valve", "3. Which matters more?"]);
+        expect(await answer.locator("ul > li").count()).toBe(3);
+        expect(await answer.locator("[data-md-table] th").count()).toBe(4);
+        expect(await answer.locator("img, script").count()).toBe(0);
+        expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined();
+        const vw = width > 1000 ? await page.evaluate(() => window.innerWidth) : width;
+        expect(await (width > 1000 ? page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) : overflow(page))).toBeLessThanOrEqual(0);
+        const region = (await answer.locator("[data-md-table]").boundingBox())!;
+        expect(region.x).toBeGreaterThanOrEqual(0);
+        expect(region.x + region.width).toBeLessThanOrEqual(vw);
+        // Paragraph spacing is real: consecutive blocks don't touch.
+        const gaps = await answer.evaluate((el) => {
+          const kids = [...el.children].map((c) => c.getBoundingClientRect());
+          return kids.slice(1).map((r, i) => r.top - kids[i].bottom);
+        });
+        expect(Math.min(...gaps)).toBeGreaterThanOrEqual(8);
+      };
+      await check();
+      if (width < 1000) {
+        // The wide table scrolls inside its own box on phones.
+        expect(await answer.locator("[data-md-table]").evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+      }
+      await answer.scrollIntoViewIfNeeded();
+      await shot(page, `${width}-formatted-answer`);
+
+      await page.waitForTimeout(400); // conversation autosave
+      await page.reload();
+      await page.getByRole("tab", { name: /Assistant/ }).first().click();
+      await answer.locator("h3").nth(2).waitFor({ timeout: 10_000 });
+      await check();
       expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
     } finally {
       await ctx.close();

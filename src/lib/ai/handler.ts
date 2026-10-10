@@ -2,12 +2,13 @@
 // an API key or a real model. The route handler wires in the real Gemini caller and limiter.
 
 import { buildContents } from "@/lib/ai/prompt";
-import { buildChanges, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposal";
-import { modelOutputSchema, requestSchema, type AssistantRequest } from "@/lib/ai/schema";
+import { buildChanges, cleanReply, clipText, completedPart, salvageReply, sanitizeReply, unverifiedFigures } from "@/lib/ai/proposal";
+import { modelOutputSchema, requestSchema, type AssistantRequest, type ModelOutput } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
-import { AI_LIMITS, PROVIDER_MESSAGES } from "@/lib/ai/types";
+import { AI_LIMITS, PROVIDER_MESSAGES, SHORTENED_NOTICE } from "@/lib/ai/types";
 import { classifyRelevance, isInjection, localReply } from "@/lib/ai/relevance";
-import { describeTopic } from "@/lib/ai/topic";
+import { OUTPUT_BUDGET, planResponse } from "@/lib/ai/responsePlan";
+import { deriveTopic, describeTopic, refersBack } from "@/lib/ai/topic";
 import { candidateLabel, matchVehicle, type VehicleQuery } from "@/lib/vehicles/match";
 import { datasetTrimToSpecSet, identityOnlySpecSet, trimLabel, vehicleLabel, type DatasetTrim } from "@/lib/vehicles/normalize";
 import type { LimitDecision } from "@/lib/ai/rateLimit.server";
@@ -17,7 +18,8 @@ import type { ModelCallResult } from "@/lib/ai/gemini.server";
 export type AssistantDeps = {
   configured: boolean;
   timeoutMs: number;
-  callModel: (contents: unknown[], signal: AbortSignal) => Promise<ModelCallResult>;
+  /** maxOutputTokens: the budget for this request's answer depth (the provider applies its own ceiling). */
+  callModel: (contents: unknown[], signal: AbortSignal, opts?: { maxOutputTokens?: number }) => Promise<ModelCallResult>;
   limiter: { check(key: string): Promise<LimitDecision>; claim(id: string): Promise<boolean> };
   clientKey: string;
   trims: () => DatasetTrim[];
@@ -160,7 +162,18 @@ export function contradictsFeasibility(reply: string, lines: string[]) {
   });
 }
 
-const DETAIL_REQUEST = /\b(?:in (?:more )?detail|detailed|elaborate|deep dive|in depth|technical(?:ly)?|step[- ]by[- ]step|more detail)\b/i;
+/** Shape of a reply recovered from cut-off output: plain conversation, no vehicle, no changes. */
+const SALVAGED: ModelOutput = {
+  intent: "general",
+  reply: "",
+  vehicle: { mentioned: false, year: null, make: null, model: null, trim: null },
+  useCurrentVehicle: false,
+  changes: [],
+  view: "none",
+  runSimulation: false,
+  followUpQuestion: null,
+};
+
 const ANALYSIS_INTENTS = ["analyze_vehicle", "modify", "compare", "sensitivity", "explain", "assumptions"];
 
 /**
@@ -202,15 +215,18 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
     };
   }
   if (!deps.configured) return fail("not_configured", req.requestId);
-  const detailed: AssistantRequest = { ...req, history, detail: req.detail || DETAIL_REQUEST.test(req.message) };
-  const subject = { subject: describeTopic(relevance.topic), followUp: relevance.outcome === "CONTEXTUAL_FOLLOWUP" };
+  // How deep and in what shape to answer is decided locally and sent with the one provider request.
+  // Follow-ups include clearly automotive messages that build on the current subject ("Which ones are supercharged?").
+  const isFollowUp = relevance.outcome === "CONTEXTUAL_FOLLOWUP" || (!!deriveTopic(history).topic && refersBack(req.message));
+  const plan = planResponse(req.message, { detail: req.detail, followUp: isFollowUp });
+  const hints = { subject: describeTopic(relevance.topic), followUp: isFollowUp, plan };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs);
   let call: ModelCallResult;
   try {
     call = await Promise.race([
-      deps.callModel(buildContents(detailed, subject), controller.signal),
+      deps.callModel(buildContents({ ...req, history }, hints), controller.signal, { maxOutputTokens: OUTPUT_BUDGET[plan.depth] }),
       new Promise<ModelCallResult>((resolve) => controller.signal.addEventListener("abort", () => resolve({ ok: false, code: "timeout" }))),
     ]);
   } catch {
@@ -220,15 +236,23 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   }
   if (!call.ok) return fail(call.code, req.requestId);
 
-  let json: unknown;
+  let output: ModelOutput | null = null;
   try {
-    json = JSON.parse(call.text);
+    const out = modelOutputSchema.safeParse(JSON.parse(call.text));
+    if (out.success) output = out.data;
   } catch {
-    return fail("invalid_output", req.requestId);
+    output = null;
   }
-  const out = modelOutputSchema.safeParse(json);
-  if (!out.success) return fail("invalid_output", req.requestId);
-  const output = out.data;
+  // An answer cut off at the output limit keeps its completed part — as conversation only, never a
+  // proposal. Anything else that fails validation is discarded.
+  let shortened = false;
+  if (!output) {
+    const partial = call.truncated ? salvageReply(call.text) : null;
+    const text = partial ? completedPart(partial) : "";
+    if (text.length < 40) return fail("invalid_output", req.requestId);
+    shortened = true;
+    output = { ...SALVAGED, reply: text };
+  }
 
   let followUp = output.followUpQuestion ? sanitizeReply(output.followUpQuestion).slice(0, 300) : null;
   let vehicle: VehicleProposal | null = null;
@@ -267,8 +291,10 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
     else if (["explain", "sensitivity", "assumptions", "compare", "analyze_vehicle"].includes(output.intent)) suggestedAction = "open_results";
   }
 
-  const reply = sanitizeReply(output.reply) || (followUp ?? "I couldn't produce an answer for that. Try rephrasing, or use Manual Setup.");
+  const clipped = clipText(cleanReply(output.reply), AI_LIMITS.maxReplyChars);
+  const reply = clipped.text || (followUp ?? "I couldn't produce an answer for that. Try rephrasing, or use Manual Setup.");
   const notices: string[] = [];
+  if (shortened || clipped.clipped) notices.push(SHORTENED_NOTICE);
   const known = `${JSON.stringify(req.context)} ${req.message} ${req.history.map((h) => h.text).join(" ")} ${
     vehicle && "specSet" in vehicle ? JSON.stringify(vehicle.specSet) : ""
   } ${kept.map((c) => c.display).join(" ")}`;

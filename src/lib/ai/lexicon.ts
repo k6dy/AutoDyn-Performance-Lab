@@ -203,6 +203,8 @@ export const COMPONENT_TERMS: [RegExp, string][] = [
   [/\bturbo(?:charger)?s?\b/, "turbochargers"],
   [/\bsupercharger/, "superchargers"],
   [/\bintercooler/, "intercoolers"],
+  [/\bwastegates?\b/, "wastegates"],
+  [/\b(?:blow[- ]?off valves?|bovs?|diverter valves?)\b/, "blow-off valves"],
   [/\bdownpipe/, "downpipes"],
   [/\bexhaust/, "exhaust systems"],
   [/\b(?:intake|cold air)\b/, "intakes"],

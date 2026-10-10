@@ -26,6 +26,7 @@ import {
   STRONG_PHRASES,
   STRONG_WORDS,
 } from "@/lib/ai/lexicon";
+import { isDepthRequest } from "@/lib/ai/responsePlan";
 import { deriveTopic, type Topic } from "@/lib/ai/topic";
 
 export const OFF_TOPIC_REPLY = "I'm here for cars, parts, and vehicle performance. Ask me something automotive-related.";
@@ -207,6 +208,7 @@ function readsAsFollowUp(text: string, e: Evidence) {
   if (!words.length || words.length > 24) return false;
   if (words.length <= 3) return true; // "Why?", "Which years?", "And the cost?"
   if (/^(?:what|how) about\b|^(?:and|but|so|also|then|ok|okay|what if|in that case|same)\b/.test(norm)) return true;
+  if (isDepthRequest(text)) return true; // "Give me the technical explanation.", "Explain it like I'm a beginner."
   if (e.pos > 0) return true; // generic automotive words ("models", "power", "reliability") with an active subject
   return words.some((w) => FOLLOW.has(w));
 }

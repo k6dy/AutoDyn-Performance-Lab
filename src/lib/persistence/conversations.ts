@@ -11,7 +11,8 @@ import { STORAGE_MESSAGES, StorageError, toStorageError } from "@/lib/persistenc
 export const CONVERSATION_SCHEMA_VERSION = 1;
 /** Hard cap per conversation; the UI asks for a new chat when reached (nothing is dropped). */
 export const MAX_CONVERSATION_MESSAGES = 1000;
-const MAX_TEXT = 4000;
+/** Stored message text (Markdown kept verbatim); above the longest reply the assistant returns. */
+export const MAX_MESSAGE_TEXT = 8000;
 
 export type StoredMessage = {
   id: string;
@@ -59,7 +60,7 @@ const iso = z.string().max(40).refine((s) => !Number.isNaN(Date.parse(s)), "inva
 export const storedMessageSchema = z.object({
   id: z.string().min(1).max(100),
   role: z.enum(["user", "assistant"]),
-  text: z.string().max(MAX_TEXT),
+  text: z.string().max(MAX_MESSAGE_TEXT),
   createdAt: z.number().finite(),
   kind: z.enum(["results", "local"]).optional(),
   localKind: z.enum(["clarify", "off_topic", "injection", "small_talk"]).optional(),

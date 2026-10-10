@@ -301,8 +301,10 @@ describe("server-side automotive relevance gate", () => {
     const model = respond(baseOutput({ intent: "general", changes: [], view: "none" }));
     await ok(request("Explain turbo lag in detail"), deps(model));
     const turn = ((model.mock.calls[0] as unknown[])[0] as { parts: { text: string }[] }[]).at(-1)!.parts[0].text;
-    expect(turn).toMatch(/DETAIL: requested/);
-    const big = { history: Array.from({ length: 8 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", text: "x".repeat(1000) })) };
+    expect(turn).toMatch(/RESPONSE GUIDE[\s\S]*Depth: detailed/);
+    expect((model.mock.calls[0] as unknown[])[2]).toEqual({ maxOutputTokens: 4096 });
+    const over = Math.floor(AI_LIMITS.maxHistoryTotalChars / AI_LIMITS.maxHistoryChars) + 1;
+    const big = { history: Array.from({ length: over }, (_, i) => ({ role: i % 2 ? "assistant" : "user", text: "x".repeat(AI_LIMITS.maxHistoryChars) })) };
     expect((await handleAssistantRequest(request("How does a turbo work?", config(), big), deps(model))).body).toMatchObject({ ok: false, code: "invalid_request" });
   });
 

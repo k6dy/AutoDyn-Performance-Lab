@@ -5,6 +5,7 @@
 
 import { configSchema, specSetSchema } from "@/lib/domain/configSchema";
 import { sanitizeRestored } from "@/lib/domain/sanitize";
+import { MAX_MESSAGE_TEXT } from "@/lib/persistence/conversations";
 import type { AnalysisConfig, SpecSet } from "@/lib/domain/types";
 import type { UnitSystem } from "@/lib/units";
 
@@ -45,7 +46,7 @@ function cleanMessages(raw: unknown): DraftMessage[] {
     .map((m) => ({
       id: String(m.id).slice(0, 80),
       role: m.role as "user" | "assistant",
-      text: String(m.text).slice(0, 4000),
+      text: String(m.text).slice(0, MAX_MESSAGE_TEXT),
       createdAt: Number(m.createdAt) || 0,
       notices: Array.isArray(m.notices) ? m.notices.map((n: unknown) => String(n).slice(0, 400)).slice(0, 10) : undefined,
     }))

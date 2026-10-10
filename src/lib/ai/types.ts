@@ -139,15 +139,19 @@ export type AssistantResponse =
 
 export const AI_UNAVAILABLE_MESSAGE = "AI assistance is temporarily unavailable. Manual Setup is still ready to use.";
 
+/** Shown when an answer reached the output limit and only its completed part is displayed. */
+export const SHORTENED_NOTICE = "This answer reached the length limit and was shortened. Ask about one part at a time for the full detail.";
+
 export const AI_LIMITS = {
   maxMessageChars: 800,
   /** 8 recent turns plus up to 2 that established the conversation's subject. */
   maxHistoryTurns: 10,
   maxHistoryChars: 1500,
   /** Total characters of conversation history sent with one request. */
-  maxHistoryTotalChars: 6000,
+  maxHistoryTotalChars: 8000,
   maxContextChars: 14000,
-  maxReplyChars: 2400,
+  /** A detailed answer (~900 words with Markdown) fits; longer output is clipped at a paragraph. */
+  maxReplyChars: 6000,
   maxChanges: 8,
 };
 

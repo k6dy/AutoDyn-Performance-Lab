@@ -1265,6 +1265,43 @@ describe("Conversation context in the assistant", () => {
   });
 });
 
+describe("formatted assistant answers", () => {
+  const formatted =
+    "### Wastegate\nBypasses exhaust around the turbine to cap boost.\n\n### Blow-off valve\n- Vents intake pressure\n- Opens when the throttle closes\n\n| Part | Side |\n|---|---|\n| Wastegate | Exhaust |\n\n<img src=x onerror=alert(1)>";
+  const lastAnswer = () => [...chatLog().querySelectorAll('[data-message-role="assistant"]')].at(-1)!;
+  const structure = () => {
+    const a = lastAnswer();
+    return { headings: [...a.querySelectorAll("h3")].map((h) => h.textContent), items: a.querySelectorAll("li").length, table: !!a.querySelector("[data-md-table] table"), img: !!a.querySelector("img") };
+  };
+  const expected = { headings: ["Wastegate", "Blow-off valve"], items: 2, table: true, img: false };
+
+  it("render as headings, lists and tables and keep that formatting after a reload and after switching chats", async () => {
+    modelOutput = general(formatted);
+    const { unmount } = renderApp();
+    await openAssistant();
+    await ask("What's a wastegate and what's a blow-off valve?");
+    await waitFor(() => expect(structure()).toEqual(expected), { timeout: 5000 });
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+
+    unmount(); // browser restart: the conversation comes back from IndexedDB
+    renderApp();
+    await openAssistant();
+    await waitFor(() => expect(structure()).toEqual(expected), { timeout: 5000 });
+
+    fireEvent.click(newChatButton());
+    modelOutput = general("Disc brakes clamp a rotor between pads.");
+    await ask("How do disc brakes work?");
+    await within(chatLog()).findByText(/clamp a rotor/);
+    expect(chatLog().querySelector("h3")).toBeNull();
+    expect(lastAssistantBody!.history).toEqual([]); // the formatted answer never leaks into another chat
+    await waitFor(() => expect(chatItems()).toHaveLength(2));
+
+    const first = chatItems().find((i) => !/brake/i.test(i.textContent ?? ""))!;
+    fireEvent.click(within(first).getAllByRole("button")[0]);
+    await waitFor(() => expect(structure()).toEqual(expected), { timeout: 5000 });
+  });
+});
+
 describe("chat persistence under slow storage", () => {
   it("switching chats while a write is in flight never drops the previous chat's latest messages", async () => {
     const base = new IndexedDbConversations(new IDBFactory());

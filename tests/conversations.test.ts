@@ -42,6 +42,17 @@ beforeEach(() => {
   repo = new IndexedDbConversations(factory);
 });
 
+describe("formatted answers in storage", () => {
+  it("a long Markdown answer is stored and restored verbatim (line breaks, lists, tables)", async () => {
+    const answer = `### Wastegate\nBypasses the turbine.\n\n- one\n- two\n\n| Part | Side |\n|---|---|\n| WG | Exhaust |\n\n${"Detail sentence about boost control. ".repeat(140)}`.trim();
+    expect(answer.length).toBeGreaterThan(AI_LIMITS.maxReplyChars - 1000);
+    await repo.put(convo("chat000777", [msg("u1", "user", "Explain a wastegate in detail"), msg("a2", "assistant", answer)]));
+    const back = await repo.get("chat000777");
+    expect(back.messages[1].text).toBe(answer);
+    expect(parseConversation(back, { id: back.id, messages: back.messages, vehicle: null })?.messages[1].text).toBe(answer);
+  });
+});
+
 describe("conversation storage", () => {
   it("saves a conversation and restores the exact ordered transcript", async () => {
     const c = convo("chat000001", [msg("u1", "user", "How does a turbo work?"), msg("a2", "assistant", "It uses exhaust energy…"), msg("u3", "user", "What about reliability?")]);
