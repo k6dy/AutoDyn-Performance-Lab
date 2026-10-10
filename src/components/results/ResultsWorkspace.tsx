@@ -13,7 +13,7 @@ import { AnimatedNumber, Button, CalculatedTag, cx, Notice, Panel, ProvenanceTag
 import { explainAnalysis, type Finding } from "@/lib/analysis/explain";
 import { buildCsvReport, buildJsonReport, buildTraceCsv } from "@/lib/analysis/export";
 import { download } from "@/lib/download";
-import { metricRows, rowDelta, type MetricRow } from "@/lib/analysis/metrics";
+import { metricRows, rowDelta, type MetricRow, type MetricSource } from "@/lib/analysis/metrics";
 import { NUMERIC_FIELDS, SPEC_LABEL } from "@/lib/domain/fields";
 import { effectiveValues } from "@/lib/domain/scenario";
 import type { NumericSpecKey, Provenance, SpecKey } from "@/lib/domain/types";
@@ -61,6 +61,27 @@ function Delta({ row }: { row: MetricRow }) {
   );
 }
 
+/**
+ * Source badge for an input row. A derived input (test mass = curb weight + driver & cargo) is never
+ * shown as verified: it carries a "Derived" badge whose tooltip and caption name each component's source.
+ */
+function SourceTag({ source, basis }: { source: MetricSource | null; basis: string | null }) {
+  if (!source || source === "calculated") return null;
+  if (source === "derived") {
+    return (
+      <span className="ml-2 inline-flex flex-wrap items-center gap-1.5 align-middle" data-source="derived">
+        <CalculatedTag label="Derived" title={`Calculated from ${basis ?? "other inputs"} — not a sourced specification`} />
+        {basis && <span className="text-[11px] leading-4 text-faint">{basis}</span>}
+      </span>
+    );
+  }
+  return (
+    <span className="ml-2 align-middle">
+      <ProvenanceTag provenance={source} />
+    </span>
+  );
+}
+
 function MetricsTable({ result, view, units }: { result: AnalysisResult; view: ResultsView; units: UnitSystem }) {
   const rows = metricRows(result, units).filter((r) => r.stock != null || r.modified != null);
   const showStock = view !== "modified";
@@ -99,13 +120,13 @@ function MetricsTable({ result, view, units }: { result: AnalysisResult; view: R
                 {showStock && (
                   <td className="px-4 py-2.5">
                     <Value v={r.stock} digits={r.digits} range={r.stockRange} />
-                    {r.kind === "input" && r.stockSource && r.stockSource !== "calculated" && <span className="ml-2 align-middle"><ProvenanceTag provenance={r.stockSource} /></span>}
+                    {r.kind === "input" && <SourceTag source={r.stockSource} basis={r.stockBasis} />}
                   </td>
                 )}
                 {showMod && (
                   <td className="px-4 py-2.5">
                     <Value v={r.modified} digits={r.digits} range={r.modifiedRange} />
-                    {r.kind === "input" && r.modifiedSource && r.modifiedSource !== "calculated" && <span className="ml-2 align-middle"><ProvenanceTag provenance={r.modifiedSource} /></span>}
+                    {r.kind === "input" && <SourceTag source={r.modifiedSource} basis={r.modifiedBasis} />}
                   </td>
                 )}
                 {showDelta && <td className="px-4 py-2.5"><Delta row={r} /></td>}
@@ -117,6 +138,7 @@ function MetricsTable({ result, view, units }: { result: AnalysisResult; view: R
       <p className="border-t border-line px-4 py-2 text-[11.5px] leading-4 text-faint">
         Simulated results are theoretical estimates calculated by AutoDyn&apos;s deterministic physics model — not measured or verified performance. &quot;Verified&quot; applies only to sourced specifications.
         Small figures beside values are the indicative range from input uncertainty (verified ±2–3%, user ±5%, estimates wider).
+        Differences are taken between the rounded figures shown, so they always match the columns.
         0–60 {result.conditions.rollout ? "uses" : "does not use"} 1-ft rollout.
       </p>
     </div>

@@ -625,6 +625,12 @@ describe("vehicle weight", () => {
     fireEvent.click(runButton());
     const row = await metricRow(/Test mass/);
     expect(row.textContent).toMatch(/3,676[\s\S]*3,526[\s\S]*−150/); // + 176 lb driver
+    // The test mass is derived (curb weight typed above + assumed driver), never shown as a sourced value.
+    expect(row.textContent).toMatch(/Derived[\s\S]*curb weight \(user-provided\) \+ driver & cargo \(estimated\)/);
+    expect(row.textContent).not.toMatch(/Verified/);
+    expect(row.querySelectorAll('[data-source="derived"]').length).toBe(2);
+    expect((await metricRow(/^Curb weight \(/)).textContent).toMatch(/3,500[\s\S]*User-provided[\s\S]*3,350[\s\S]*User-provided/);
+    expect((await metricRow(/^Driver & cargo \(/)).textContent).toMatch(/176[\s\S]*Estimated/);
   });
 
   it("weight converts between imperial and metric without changing the stored mass", async () => {

@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { aiConfig, deploymentInfo, lastProviderHealth, modelVisibility, probeProvider, verifyAccess } from "@/lib/ai/gemini.server";
-import { clientKeyFrom, MemoryRateLimiter } from "@/lib/ai/rateLimit.server";
+import { clientKeyFrom, MemoryRateLimiter, rateLimiterInfo } from "@/lib/ai/rateLimit.server";
 import type { AssistantStatus } from "@/lib/ai/types";
 
 export const maxDuration = 25;
@@ -66,6 +66,7 @@ export async function GET(request: Request) {
     provider,
     configNotes: cfg.configNotes,
     env: cfg.env,
+    rateLimiter: rateLimiterInfo(),
     probe,
     ...(note ? { note } : {}),
   };

@@ -98,6 +98,8 @@ export type AssistantStatus = {
   configNotes?: string[];
   /** Which expected variables exist in this deployment's runtime (presence only, never values). */
   env?: { GEMINI_API_KEY: boolean; GEMINI_MODEL: boolean };
+  /** How assistant requests are rate limited on this deployment: shared (upstash) or per instance (memory). */
+  rateLimiter?: { backend: "upstash" | "memory"; persistent: boolean; limits: { perMinute: number; perDay: number; globalPerDay: number } };
 };
 
 /** Codes after which sending more messages cannot succeed until configuration changes. */

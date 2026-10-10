@@ -42,6 +42,7 @@ export function buildJsonReport(result: AnalysisResult, units: UnitSystem) {
   return {
     app: "AutoDyn Performance Lab",
     resultsBasis: RESULTS_BASIS,
+    deltaRounding: DELTA_ROUNDING_NOTE,
     provenanceLegend: PROVENANCE_LEGEND,
     engineVersion: result.engineVersion,
     analysisId: result.id,
@@ -62,14 +63,23 @@ export function buildJsonReport(result: AnalysisResult, units: UnitSystem) {
 /** What the numbers are: AutoDyn's results are simulated, never verified performance. */
 export const RESULTS_BASIS =
   "Simulated results: theoretical estimates calculated by AutoDyn's deterministic physics model. They are not measured or verified performance, and the feasibility assessment covers modeled constraints only (not real-world durability, cooling or drivetrain strength).";
+/** The one rounding policy for Stock → Modified differences (see metrics.rowDelta). */
+export const DELTA_ROUNDING_NOTE =
+  "Differences and percentages are computed from the displayed (rounded) Stock and Modified figures, so they always match the table; full-precision values are in metricsSI.";
 const PROVENANCE_LEGEND = {
   verified: "Verified dataset specification (sourced)",
   user: "User-provided value",
   estimated: "Estimated (AutoDyn modeling assumption or default)",
   unavailable: "Unavailable",
+  derived: "Derived input: calculated from the listed specifications (as reliable as its least reliable component)",
   calculated: "Calculated by AutoDyn (simulated output)",
 };
-const sourceText = (s: string | null) => (s ? (PROVENANCE_LEGEND as Record<string, string>)[s] ?? s : "");
+/** Source column text; a derived input names its components and their sources. */
+const sourceText = (s: string | null, basis: string | null = null) => {
+  if (!s) return "";
+  const text = (PROVENANCE_LEGEND as Record<string, string>)[s] ?? s;
+  return s === "derived" && basis ? `Derived input: ${basis}` : text;
+};
 
 const csvCell = (v: unknown) => {
   const s = v == null ? "" : String(v);
@@ -84,6 +94,7 @@ export function buildCsvReport(result: AnalysisResult, units: UnitSystem) {
   const fmt = (v: number | null, d: number) => (v == null ? "" : v.toFixed(d));
   lines.push(csvLine(["AutoDyn analysis", vehicleLabel(result.identity), result.createdAt, result.engineVersion]));
   lines.push(csvLine(["Results basis", RESULTS_BASIS]));
+  lines.push(csvLine(["Rounding", DELTA_ROUNDING_NOTE]));
   lines.push("");
   lines.push(csvLine(["Metric", "Unit", "Stock", "Stock low", "Stock high", "Modified", "Modified low", "Modified high", "Difference", "Difference %", "Stock source", "Modified source"]));
   for (const row of metricRows(result, units)) {
@@ -94,7 +105,7 @@ export function buildCsvReport(result: AnalysisResult, units: UnitSystem) {
         fmt(row.stock, row.digits), fmt(row.stockRange?.[0] ?? null, row.digits), fmt(row.stockRange?.[1] ?? null, row.digits),
         fmt(row.modified, row.digits), fmt(row.modifiedRange?.[0] ?? null, row.digits), fmt(row.modifiedRange?.[1] ?? null, row.digits),
         d ? d.abs.toFixed(row.digits) : "", d?.rel != null ? d.rel.toFixed(1) : "",
-        sourceText(row.stockSource), sourceText(row.modifiedSource),
+        sourceText(row.stockSource, row.stockBasis), sourceText(row.modifiedSource, row.modifiedBasis),
       ]),
     );
   }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { aiConfig, deploymentInfo, geminiCaller, lastProviderHealth } from "@/lib/ai/gemini.server";
 import { handleAssistantRequest } from "@/lib/ai/handler";
-import { clientKeyFrom, getRateLimiter } from "@/lib/ai/rateLimit.server";
+import { clientKeyFrom, getRateLimiter, rateLimiterInfo } from "@/lib/ai/rateLimit.server";
 import type { AssistantStatus } from "@/lib/ai/types";
 import { allDatasetTrims, datasetSpecSet } from "@/lib/vehicles/dataset.server";
 import { nhtsaModels } from "@/lib/vehicles/nhtsa.server";
@@ -15,7 +15,7 @@ const MAX_BODY = 64_000;
 /** Configuration status only (no provider call). Use /api/assistant/health?probe=1 for a live check. */
 export async function GET() {
   const cfg = aiConfig();
-  const body: AssistantStatus = { configured: !!cfg.apiKey, model: cfg.model, deployment: deploymentInfo(), provider: lastProviderHealth(), configNotes: cfg.configNotes, env: cfg.env };
+  const body: AssistantStatus = { configured: !!cfg.apiKey, model: cfg.model, deployment: deploymentInfo(), provider: lastProviderHealth(), configNotes: cfg.configNotes, env: cfg.env, rateLimiter: rateLimiterInfo() };
   return NextResponse.json(body, { headers: noStore });
 }
 

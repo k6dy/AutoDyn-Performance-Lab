@@ -140,6 +140,24 @@ export function getRateLimiter(): RateLimiter {
   return shared;
 }
 
+export type RateLimiterInfo = {
+  /** upstash: counters shared by every serverless instance · memory: per warm instance only (best-effort). */
+  backend: "upstash" | "memory";
+  persistent: boolean;
+  limits: { perMinute: number; perDay: number; globalPerDay: number };
+};
+
+/** Non-secret description of the limiter in use, so a deployment can be checked for global enforcement. */
+export function rateLimiterInfo(): RateLimiterInfo {
+  const limiter = getRateLimiter();
+  return { backend: limiter.persistent ? "upstash" : "memory", persistent: limiter.persistent, limits: limits() };
+}
+
+/** Test hook: forget the shared limiter so environment changes are picked up. */
+export function resetRateLimiter() {
+  shared = null;
+}
+
 export async function clientKeyFrom(headers: Headers) {
   const ip = headers.get("x-forwarded-for")?.split(",")[0]?.trim() || headers.get("x-real-ip") || "unknown";
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`autodyn:${ip}`));
