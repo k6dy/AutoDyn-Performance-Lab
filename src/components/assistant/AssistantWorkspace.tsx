@@ -610,7 +610,8 @@ export default function AssistantWorkspace() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  submit();
+                  // A held key or an IME composition must not send the message again.
+                  if (!e.repeat && !e.nativeEvent.isComposing) submit();
                 }
               }}
               className="field-sizing-content max-h-36 min-h-[24px] flex-1 resize-none bg-transparent text-[15px] leading-6 text-ink outline-none placeholder:text-faint sm:text-[14px]"

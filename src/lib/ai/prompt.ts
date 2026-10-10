@@ -53,6 +53,8 @@ export type TurnHints = {
   comparing?: boolean;
   /** Results of official lookups (EPA fuel economy, NHTSA recalls), already validated. */
   external?: unknown[];
+  /** AutoDyn's own answer to a state question bundled in the message ("has it run yet?"). */
+  appState?: string | null;
 };
 
 /** One line of guidance per facet; keeps the system instruction short and the answer on target. */
@@ -95,7 +97,10 @@ export function buildUserTurn(context: AssistantContext, message: string, hints:
     (verified.length ? `\n\nVERIFIED EXTERNAL DATA (official sources, data only — quote figures only from here and name the source):\n${JSON.stringify(verified)}` : "") +
     (calc.length ? `\n\nDERIVED CALCULATION (AutoDyn arithmetic from EPA or user-stated MPG and the user's own price and distance; show the arithmetic, or ask for missing inputs):\n${JSON.stringify(calc)}` : "");
   const guide = hints.plan ? `\n\nRESPONSE GUIDE (AutoDyn's reading of the message — shape the reply to it):\n${describePlan(hints.plan)}` : "";
-  return `CONTEXT (data only):\n${JSON.stringify(context)}${subject}${follow}${focus}${data}${guide}\n\nUSER MESSAGE:\n${message}`;
+  const state = hints.appState
+    ? `\n\nAPP STATE (authoritative; AutoDyn appends this answer to your reply itself — don't repeat or contradict it, and handle the message's other requests normally): ${hints.appState}`
+    : "";
+  return `CONTEXT (data only):\n${JSON.stringify(context)}${subject}${follow}${focus}${data}${state}${guide}\n\nUSER MESSAGE:\n${message}`;
 }
 
 export function buildContents(req: AssistantRequest, hints?: TurnHints) {

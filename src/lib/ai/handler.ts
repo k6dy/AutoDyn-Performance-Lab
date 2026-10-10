@@ -6,7 +6,10 @@ import { buildChanges, cleanReply, clipText, completedPart, salvageReply, saniti
 import { modelOutputSchema, requestSchema, type AssistantRequest, type ModelOutput } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
 import { AI_LIMITS, PROVIDER_MESSAGES, SHORTENED_NOTICE } from "@/lib/ai/types";
-import { appStateReply } from "@/lib/ai/appState";
+import { applyProposal } from "@/lib/ai/apply";
+import { appStateReply, appStatusPart, isPureAppQuestion } from "@/lib/ai/appState";
+import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
+import { validateConfig } from "@/lib/domain/validation";
 import { gatherGrounding, sourcesOf, type OwnershipSources } from "@/lib/ai/grounding";
 import { stripFalseAttribution, stripUnbackedPerformance, stripUnmodeledClaims, stripUnverifiedMoney } from "@/lib/ai/guards";
 import { classifyRelevance, declineNote, isInjection, localReply } from "@/lib/ai/relevance";
@@ -222,7 +225,10 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   }
   // Questions about AutoDyn's own state ("Have you run it yet?") are answered from the request's
   // application state — authoritative, and without a provider call.
-  const appReply = appStateReply(relevance.supported ?? req.message, req.context);
+  // Only a message that is purely a state question is answered here; bundled with other requests,
+  // the status part is reported alongside the provider's answer below.
+  const appMessage = relevance.supported ?? req.message;
+  const appReply = isPureAppQuestion(appMessage) ? appStateReply(appMessage, req.context) : null;
   if (appReply) {
     const reply = relevance.declined?.length ? `${appReply}\n\n${declineNote(relevance.declined)}` : appReply;
     return { status: 200, body: { ok: true, requestId: req.requestId, reply, followUpQuestion: null, proposal: null, suggestedAction: null, notices: [], local: "app_state" } };
@@ -236,6 +242,9 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   const plan = planResponse(message, { detail: req.detail, followUp: isFollowUp });
   const userTexts = [...history.filter((h) => h.role === "user").map((h) => h.text), message];
   const external = await gatherGrounding({ aspect: relevance.aspect, topic: relevance.topic, context: req.context, message, userTexts, sources: deps.ownership });
+  // A state question bundled with other requests: AutoDyn answers that part from the real state.
+  const statusPart = appStatusPart(message);
+  const statusNow = statusPart ? appStateReply(statusPart, req.context) : null;
   const hints = {
     subject: describeTopic(relevance.topic),
     followUp: isFollowUp,
@@ -243,6 +252,7 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
     aspect: relevance.aspect,
     comparing: !!relevance.topic?.comparing,
     external,
+    appState: statusNow,
   };
 
   const controller = new AbortController();
@@ -332,8 +342,8 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
     const g = stripUnbackedPerformance(reply, known, { figures: !!pending || output.intent !== "general" });
     if (g.removed) reply = g.text || "Nothing has been simulated yet, so there are no calculated results to report.";
   }
-  if (proposal) notices.push(nextStep(proposal));
-  else if (req.context.pendingProposal && ANALYSIS_INTENTS.includes(output.intent)) {
+  if (proposal && !statusPart) notices.push(nextStep(proposal));
+  else if (!statusPart && req.context.pendingProposal && ANALYSIS_INTENTS.includes(output.intent)) {
     notices.push(req.context.pendingProposal.needsChoice ? "Not simulated yet: choose the exact variant in the pending proposal, then select Apply to Simulation." : "Not simulated yet: the proposal above is still waiting — select Apply to Simulation (or Cancel) to continue.");
   }
   // Dollar figures (market prices, insurance, repairs, fuel costs) only from data AutoDyn or the user supplied.
@@ -356,6 +366,11 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   }
   const figures = unverifiedFigures(reply, known).filter((f) => !f.includes("$"));
   if (figures.length) notices.push(`Not verified by AutoDyn (general knowledge): ${figures.join(", ")}.`);
+  // The status part is reported by AutoDyn itself: a proposal made now has not been simulated.
+  if (statusPart) {
+    const status = proposal ? nextStep(proposal).replace(/^Not simulated yet: /, "No — nothing has been simulated yet. ") : statusNow;
+    if (status) reply = `${reply}\n\n**Simulation status:** ${status}`;
+  }
   if (relevance.declined?.length) reply = `${reply}\n\n${declineNote(relevance.declined)}`;
   const feasibilityLines = req.context.results?.feasibility ?? [];
   if (feasibilityLines.length && contradictsFeasibility(reply, feasibilityLines)) {
@@ -382,5 +397,18 @@ function nextStep(p: Proposal) {
   if (v?.kind === "choose") return "Not simulated yet: choose the exact variant below, then select Apply to Simulation.";
   if (v?.kind === "identify" || v?.kind === "not_found") return "Not simulated yet: AutoDyn needs the missing specifications listed below before it can run.";
   if (!p.changes.length && !v) return "Not simulated yet: nothing in this request can be applied — see the notes below.";
+  const blocked = validationError(p);
+  if (blocked) return `Not simulated yet: AutoDyn's input validation blocks these values — ${blocked.replace(/\.$/, "")}. Adjust them in the proposal below (or cancel), then select Apply to Simulation.`;
   return "Not simulated yet: review the proposed changes below and select Apply to Simulation to run the physics engine.";
+}
+
+/**
+ * The same deterministic validation the review panel applies, for a proposal that brings its own
+ * vehicle — so the next step names a real blocker (e.g. power the stated torque can't produce).
+ */
+function validationError(p: Proposal): string | null {
+  if (p.vehicle?.kind !== "load") return null;
+  const empty = { stock: null, modified: null, conditions: { ...DEFAULT_CONDITIONS } };
+  const { config } = applyProposal(empty, p, { selected: Object.fromEntries(p.changes.map((c) => [c.id, true])) });
+  return validateConfig(config).issues.find((i) => i.severity === "error")?.message ?? null;
 }

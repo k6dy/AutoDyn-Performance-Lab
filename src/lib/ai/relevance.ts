@@ -107,9 +107,16 @@ export function classifyRelevance(message: string, ctx: RelevanceContext): Relev
   if (whole.basis === "injection" || whole.decision === "small_talk") return whole;
   const parts = splitParts(message);
   if (parts.length < 2) return whole;
-  // Each part is read with the parts before it as context ("Compare AWD and RWD. What are the disadvantages?").
-  const per = parts.map((p, i) => classifyOne(p, { ...ctx, history: [...ctx.history, ...parts.slice(0, i).map((t) => ({ role: "user" as const, text: t }))] }));
-  const declined = parts.filter((_, i) => per[i].decision === "reject");
+  // Each part is read with everything before it in the message as context ("Analyze a 2015 C300.
+  // Propose +60 hp. Explain what will change."). A part is declined only on positive evidence that it
+  // is about something else — never merely because, on its own, it lacks automotive words.
+  const lower = message.toLowerCase();
+  const per = parts.map((p) => {
+    const at = lower.indexOf(p.replace(/[?.!]+$/, "").trim().toLowerCase());
+    const before = at > 0 ? message.slice(0, at).trim() : "";
+    return classifyOne(p, { ...ctx, history: before ? [...ctx.history, { role: "user" as const, text: before }] : ctx.history });
+  });
+  const declined = parts.filter((p, i) => per[i].decision === "reject" && elsewhere(p));
   if (!declined.length) return whole;
   if (declined.length === parts.length) return whole.decision === "reject" ? whole : { ...per[0], reply: OFF_TOPIC_REPLY };
   const supported = withoutParts(message, declined) || parts.filter((_, i) => per[i].decision !== "reject").join(" ");
@@ -290,6 +297,12 @@ const GENERAL_QUESTION = /^(?:how (?:does|do|is|are|can|could|would)|why|what (?
 function foreignName(text: string) {
   const words = text.replace(/[^\p{L}\p{N}\s'-]/gu, " ").split(/\s+/).filter(Boolean);
   return words.slice(1).some((w) => /^\p{Lu}\p{Ll}{2,}$/u.test(w) && !KNOWN.has(w.toLowerCase().replace(/'s$/, "")));
+}
+
+/** Positive evidence that a message is about something other than vehicles (not just a lack of car words). */
+function elsewhere(text: string) {
+  const e = evidence(text);
+  return e.task > 0 || e.neg > 0 || foreignName(text) || (aboutAssistant(text) && !isAppQuestion(text));
 }
 
 /** Clarifying question that names what is missing instead of a generic prompt. */

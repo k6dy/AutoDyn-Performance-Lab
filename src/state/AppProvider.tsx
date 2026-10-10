@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { appStateReply } from "@/lib/ai/appState";
+import { appStateReply, isPureAppQuestion } from "@/lib/ai/appState";
 import { buildAssistantContext, pendingProposalOf } from "@/lib/ai/context";
 import type { AssistantErrorCode, AssistantResponse, AssistantStatus, DeploymentInfo, ProviderCode } from "@/lib/ai/types";
 import { AI_LIMITS, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
@@ -229,6 +229,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [aiStatus, setAiStatus] = useState<AiStatus>({ phase: "checking", code: null, model: null, deployment: null, checkedAt: null });
   const hydrated = useRef(false);
   const inflightChats = useRef(new Set<string>());
+  const lastSubmit = useRef<{ text: string; conversationId: string; at: number } | null>(null);
   // Latest unsaved snapshot per conversation: switching chats mid-write must not drop the other chat's newest state.
   const chatWrite = useRef<{ pending: Map<string, Conversation>; busy: boolean; deleted: Set<string> }>({ pending: new Map(), busy: false, deleted: new Set() });
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
@@ -531,6 +532,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!message || s.chat.pending || message.length > AI_LIMITS.maxMessageChars || s.chat.messages.length >= MAX_CONVERSATION_MESSAGES - 2) return;
       const conversationId = s.chat.id ?? newConversationId();
       if (inflightChats.current.has(conversationId)) return; // rapid repeat submission
+      // The same text submitted twice before the UI re-renders (double Enter, Enter + click) is one message.
+      const last = lastSubmit.current;
+      if (last && last.text === message && last.conversationId === (s.chat.id ?? last.conversationId) && Date.now() - last.at < 2000) return;
+      lastSubmit.current = { text: message, conversationId, at: Date.now() };
       const now = Date.now();
       const userMessage: ChatMessage = { id: newId(), role: "user", text: message, createdAt: now };
       const vehicle = s.config.stock;
@@ -542,7 +547,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const userTexts = [...s.chat.messages.filter((m) => m.role === "user" && (m.kind !== "local" || m.localKind === "clarify")).map((m) => m.text), message];
       const title = s.chat.customTitle || s.chat.title !== NEW_CHAT_TITLE || relevance.decision === "reject" ? null : titleFor(userTexts, vehicle ?? s.chat.vehicle, relevance.topic);
       // Questions about AutoDyn's own state ("Have you run it yet?") are answered from that state, locally.
-      const appAnswer = relevance.decision === "allow" ? appStateReply(relevance.supported ?? message, contextOf(s)) : null;
+      const appMessage = relevance.supported ?? message;
+      const appAnswer = relevance.decision === "allow" && isPureAppQuestion(appMessage) ? appStateReply(appMessage, contextOf(s)) : null;
       const appReply = appAnswer && relevance.declined?.length ? `${appAnswer}\n\n${declineNote(relevance.declined)}` : appAnswer;
       if (appReply) {
         dispatch({ type: "chatLocal", conversationId, vehicle, localKind: "app_state", title, message: userMessage, reply: { id: `l-${userMessage.id}`, role: "assistant", text: appReply, createdAt: now } });

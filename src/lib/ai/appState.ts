@@ -3,7 +3,9 @@
 // authoritative application state in the request context: the pending proposal, the applied
 // configuration and the completed results are separate states and are reported separately.
 
+import { splitParts } from "@/lib/ai/responsePlan";
 import type { AssistantContext } from "@/lib/ai/schema";
+import { extractTopic } from "@/lib/ai/topic";
 
 /** Mentions of the application, its workflow or its outputs. */
 const APP_WORDS =
@@ -32,6 +34,26 @@ const KINDS: [Kind, RegExp][] = [
 export function appQuestionKind(text: string): Kind | null {
   const n = norm(text);
   return KINDS.find(([, re]) => re.test(n))?.[0] ?? null;
+}
+
+/** Asks AutoDyn to do something with a vehicle (identify, analyze, modify) rather than report state. */
+const ACTION = /\b(?:analy[sz]e|propose|add|load|simulate|compare|modify|upgrade|swap|tune|remove|reduce|increase|lower)\b|\b\d+(?:\.\d+)?\s*(?:hp|horsepower|bhp|kw|ps|lb-?ft|lbs?|kg|nm|psi|%)\b/i;
+
+/**
+ * True only when the whole message is a state or how-to question. A status question bundled with
+ * other requests ("Analyze a 2015 C300, propose +60 hp, and say whether it has run") must not be
+ * answered locally on its own — the other intents still need processing.
+ */
+export function isPureAppQuestion(text: string) {
+  if (!appQuestionKind(text) || splitParts(text).length >= 2 || ACTION.test(text)) return false;
+  const t = extractTopic(text);
+  return t.makes.length + t.models.length + t.ambiguous.length === 0;
+}
+
+/** The state-question part of a multipart message ("…and whether the simulation has run yet"), if any. */
+export function appStatusPart(text: string): string | null {
+  const parts = splitParts(text);
+  return parts.length >= 2 ? (parts.find((p) => appQuestionKind(p) !== null && !ACTION.test(p)) ?? null) : null;
 }
 
 const PROVENANCE: Record<string, string> = { verified: "verified dataset", user: "user-provided", estimated: "estimated" };

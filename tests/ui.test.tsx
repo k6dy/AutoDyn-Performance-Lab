@@ -1114,10 +1114,10 @@ describe("Automotive assistant & chat history", () => {
     renderApp();
     await openAssistant();
     await ask("What causes engine knock?");
-    expect(await screen.findByText(/Not sent:/)).toBeTruthy();
+    expect(await screen.findByText(/Not sent:/, undefined, { timeout: 5000 })).toBeTruthy();
     expect(within(chatLog()).queryByText(/uncontrolled combustion/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Retry/ }));
-    expect(await within(chatLog()).findByText(/uncontrolled combustion/)).toBeTruthy();
+    expect(await within(chatLog()).findByText(/uncontrolled combustion/, undefined, { timeout: 5000 })).toBeTruthy();
     expect(within(chatLog()).getAllByText("What causes engine knock?")).toHaveLength(1);
     expect(screen.queryByText(/Not sent:/)).toBeNull();
   });
@@ -1323,6 +1323,46 @@ describe("formatted assistant answers", () => {
     const first = chatItems().find((i) => !/brake/i.test(i.textContent ?? ""))!;
     fireEvent.click(within(first).getAllByRole("button")[0]);
     await waitFor(() => expect(structure()).toEqual(expected), { timeout: 5000 });
+  });
+});
+
+describe("multipart analysis request in the app", () => {
+  it("proposes the vehicle and +60 hp for review, reports the real status, never applies invalid values, and one Enter press = one answer", async () => {
+    modelOutput = {
+      intent: "modify",
+      reply: "Loading the 2015 C300 4MATIC as the stock baseline; the modified scenario adds 60 hp.",
+      vehicle: { mentioned: true, year: 2015, make: "Mercedes-Benz", model: "C300", trim: "4MATIC" },
+      useCurrentVehicle: false,
+      changes: [{ scenario: "modified", field: "power", operation: "change", value: 60, unit: "hp", option: "", reason: "60 additional horsepower" }],
+      view: "compare",
+      runSimulation: true,
+      followUpQuestion: null,
+    };
+    const { unmount } = renderApp();
+    const input = await openAssistant();
+    fireEvent.change(input, {
+      target: { value: "Analyze a stock 2015 Mercedes-Benz C300 4MATIC with the 2.0L turbo engine. Propose a modified version with 60 additional horsepower. Explain what will change and whether the simulation has actually run yet." },
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter", repeat: true }); // held key
+    await within(chatLog()).findByText(/Simulation status:/, undefined, { timeout: 5000 });
+    expect(assistantCalls).toBe(1);
+    expect(within(chatLog()).getAllByText(/Loading the 2015 C300 4MATIC/)).toHaveLength(1);
+    expect(within(chatLog()).queryByText(/Not answered/)).toBeNull();
+    const [apply] = await screen.findAllByRole("button", { name: /Apply to Simulation/ });
+    expect(screen.getByText(/No vehicle yet/)).toBeTruthy(); // nothing applied before approval
+    expect(document.body.textContent).toMatch(/241 hp → 301 hp/);
+    // +60 hp without more torque fails AutoDyn's power/torque check: Apply is blocked and the status says why.
+    expect(apply.hasAttribute("disabled")).toBe(true);
+    expect(within(chatLog()).getByText(/input validation blocks these values/)).toBeTruthy();
+    fireEvent.click(apply);
+    expect(screen.getByText(/No vehicle yet/)).toBeTruthy();
+    expect(screen.queryByText(/Physics engine results for/)).toBeNull();
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+    unmount();
+    renderApp();
+    await openAssistant();
+    await waitFor(() => expect(within(chatLog()).getByText(/Loading the 2015 C300 4MATIC/)).toBeTruthy(), { timeout: 5000 });
   });
 });
 

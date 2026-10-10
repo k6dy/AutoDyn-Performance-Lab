@@ -44,7 +44,9 @@ const EVALUATIVE = /\b(?:reliab|problem|issue|fail|differ|compar|better|worse|be
 
 const Q_START =
   /^(?:what|what's|whats|how|how's|why|which|who|when|where|whether|is|are|was|were|does|do|did|can|could|should|would|will|has|have|isn't|aren't|doesn't|don't)\b/i;
-const VERB_START = /^(?:explain|describe|compare|define|tell me|list|give me|show me|walk me through|break down|summari[sz]e|outline|recommend|name|write|help|solve|translate)\b/i;
+// Requests as well as questions start a part: "Analyze a 2015 C300. Propose +60 hp. Explain what changes."
+const VERB_START =
+  /^(?:explain|describe|compare|define|tell me|list|give me|show me|show|walk me through|break down|summari[sz]e|outline|recommend|name|write|help|solve|translate|analy[sz]e|propose|add|load|simulate|run|apply|calculate|estimate|check|set|change|remove|reduce|increase|lower|raise|swap|upgrade|tune|modify|make it|try|say|confirm|report|let me know)\b/i;
 const NOUN_LIST = /^(?:(?:can|could) you |please )?(?:explain|describe|define|tell me about|what are|what're)\s+(?!(?:how|why|what|whether|if|when|where|the differences?|differences?)\b)(.+)$/i;
 const FILLER = /^(?:(?:and|also|ok(?:ay)?|so|then|plus|but|hey|hi|now)\b[,\s]*)+/i;
 /** Sentence ends: after ?/! always; after a period only before a capital or a question/request word. */
