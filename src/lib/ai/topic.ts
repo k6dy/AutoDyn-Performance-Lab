@@ -58,6 +58,24 @@ const CAR_CONFIRM = /\b(?:car|cars|vehicle|vehicles|automobile|brand|make|manufa
 const OTHER_CONFIRM = /\b(?:animal|cat|creature|wild|zoo|second one|the second|latter|planet|horse|snake|insect|flower|president)\b/i;
 const COMPARE_CUE = /\b(?:compare[ds]?|comparison|comparing|vs\.?|versus|against|better than|worse than|head to head)\b/;
 const RESUME_CUE = /\b(?:back to|return(?:ing)? to|go(?:ing)? back to|again about)\b/;
+/** Manufacturers of unambiguous model codes, so "the 2018 M4" can be looked up without "BMW". */
+const MAKE_OF: [RegExp, string][] = [
+  [/^(?:m[2-8]|m\d{3}i|\d{3}[id]|x[1-7]|z4|i[348x])\b/i, "BMW"],
+  [/^(?:[ces]\d{2,3}|cla|gla|glc|gle|gls|amg gt|sl\d{2,3})\b/i, "Mercedes-Benz"],
+  [/^(?:rs ?\d|s[3-8]|a[3-8]|r8|tt|q[3-8]|e-tron)\b/i, "Audi"],
+  [/^(?:911|cayman|boxster|macan|taycan|panamera|cayenne|carrera)\b/i, "Porsche"],
+  [/^(?:civic|accord|integra|nsx|s2000|prelude|type r)\b/i, "Honda"],
+  [/^(?:supra|camry|corolla|gr86|tacoma|4runner|rav4|prius|tundra|highlander)\b/i, "Toyota"],
+  [/^(?:corvette|camaro|silverado|tahoe|suburban)\b/i, "Chevrolet"],
+  [/^(?:f-?150|f-?250|bronco|explorer|focus|fiesta|mach-e|raptor)\b/i, "Ford"],
+  [/^(?:wrx|sti|brz|impreza|forester|outback)\b/i, "Subaru"],
+  [/^(?:miata|mx-?5|rx-?7|rx-?8)\b/i, "Mazda"],
+  [/^(?:gt-?r|370z|350z|skyline|altima|maxima)\b/i, "Nissan"],
+  [/^(?:model [3sxy]|cybertruck)\b/i, "Tesla"],
+  [/^(?:f-type|f-pace|xjr?|xkr?|xf|xe)\b/i, "Jaguar"],
+];
+export const inferMake = (model: string) => MAKE_OF.find(([re]) => re.test(model))?.[1] ?? null;
+
 const EV_MAKES = new Set(["Tesla", "Rivian", "Lucid", "Polestar", "Fisker"]);
 const EV_MODELS = /^(?:Model [3SXY]|Taycan|Ioniq\b.*|Leaf|Bolt|Mach-E|Lightning|Cybertruck|EV6|EV9|ID-?4|I3|I4|IX|E-Tron.*|Kona Electric|Niro EV)$/i;
 const RANGE_QUESTION =/\b(?:what about|how much|the|its|their|real[- ]world|driving|electric|total) range\b|^range\b/;
@@ -188,6 +206,8 @@ export function extractTopic(text: string): Extracted {
   if (t.components.includes("turbo lag")) t.components = t.components.filter((c) => c !== "turbochargers");
   t.aspect = ASPECTS.find((a) => a.re.test(n))?.id ?? (RANGE_QUESTION.test(n) ? "fuel_range" : null);
   if (t.entities.length === 1 && t.years.length === 1) t.entities[0].year = t.years[0];
+  // A known model code without its make ("2018 M4") still identifies the manufacturer for lookups.
+  for (const e of t.entities) if (!e.make) e.make = inferMake(e.model);
   return {
     ...t,
     makes: uniq(t.makes),
@@ -375,5 +395,5 @@ export function pinnedVehicles(t: Topic | null): { year: number | null; make: st
   return t.vehicles
     .filter((v): v is Entity & { make: string } => !!v.make)
     .slice(0, 2)
-    .map((v) => ({ year: (!t.comparing && t.years[0]) || v.year, make: v.make, model: v.model }));
+    .map((v) => ({ year: (!t.comparing && t.years[0]) || v.year || (t.years.length === 1 ? t.years[0] : null), make: v.make, model: v.model }));
 }

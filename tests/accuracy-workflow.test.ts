@@ -27,7 +27,7 @@ const out = (reply: string, patch: Partial<ModelOutput> = {}): ModelOutput => ({
   ...patch,
 });
 type Contents = { role: string; parts: { text: string }[] }[];
-type Msg = { role: "user" | "assistant"; text: string; kind?: "local"; localKind?: "clarify" | "off_topic" | "injection" | "small_talk" };
+type Msg = { role: "user" | "assistant"; text: string; kind?: "local"; localKind?: "clarify" | "off_topic" | "injection" | "small_talk" | "app_state" };
 
 const F_TYPE: FuelEconomyResult = {
   status: "found",
@@ -35,6 +35,8 @@ const F_TYPE: FuelEconomyResult = {
   query: "2018 Jaguar F-Type R",
   retrieved: "2026-10-10T08:00:00.000Z",
   totalVariants: 2,
+  variantsDifferIn: ["body: coupe / convertible"],
+  sameRatingForAll: true,
   variants: [
     { label: "2018 Jaguar F-Type R AWD Coupe — Auto (S8), 8 cyl, 5.0 L, Sup Charg", cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", electricRangeMiles: null, kwhPer100Miles: null, drive: "All-Wheel Drive", transmission: "Automatic (S8)", url: "https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38709" },
     { label: "2018 Jaguar F-Type R AWD Convertible — Auto (S8), 8 cyl, 5.0 L, Sup Charg", cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", electricRangeMiles: null, kwhPer100Miles: null, drive: "All-Wheel Drive", transmission: "Automatic (S8)", url: "https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38710" },
@@ -319,7 +321,7 @@ describe("Fix 4 — accurate sources and calculations", () => {
     const r = await lookupVariants({ year: 2022, make: "BMW", model: "M340i" }, { fetcher: fetcher() });
     if (r.status !== "found") throw new Error(r.status);
     expect(r.models.map((m) => m.name)).toEqual(["M340i", "M340i xDrive"]);
-    expect(r.note).toMatch(/not sold in the U\.S\. that year/);
+    expect(r.note).toMatch(/isn't in EPA's list for that year[\s\S]*not that it never existed/);
   });
 
   it("fuel-cost inputs are parsed from the user's own words and the arithmetic is explicit", () => {

@@ -131,8 +131,35 @@ export type FuelEconomyVariant = {
 };
 
 export type FuelEconomyResult =
-  | { status: "found"; source: string; query: string; retrieved: string; variants: FuelEconomyVariant[]; totalVariants: number }
+  | {
+      status: "found";
+      source: string;
+      query: string;
+      retrieved: string;
+      variants: FuelEconomyVariant[];
+      totalVariants: number;
+      /** How the listed variants differ (body, transmission, drivetrain) — ask only about these. */
+      variantsDifferIn: string[];
+      sameRatingForAll: boolean;
+    }
   | { status: "needs_year" | "not_found" | "unavailable"; source: string; query: string; note: string };
+
+const BODY_RE = /\b(coupe|convertible|sedan|wagon|hatchback|cabriolet|roadster|sportbrake|gran coupe)\b/i;
+
+/** The dimensions on which the returned EPA variants differ, so the assistant asks only about those. */
+function differences(vs: FuelEconomyVariant[]) {
+  const dims: [string, (v: FuelEconomyVariant) => string | null][] = [
+    ["body", (v) => BODY_RE.exec(v.label.split(" — ")[0])?.[1]?.toLowerCase() ?? null],
+    ["transmission", (v) => v.label.split(" — ")[1]?.split(",")[0]?.trim() ?? null],
+    ["drivetrain", (v) => v.drive],
+  ];
+  const variantsDifferIn = dims.flatMap(([name, get]) => {
+    const values = [...new Set(vs.map(get).filter((x): x is string => !!x))];
+    return values.length > 1 ? [`${name}: ${values.join(" / ")}`] : [];
+  });
+  const sameRatingForAll = new Set(vs.map((v) => `${v.cityMpg}/${v.highwayMpg}/${v.combinedMpg}/${v.electricRangeMiles}`)).size === 1;
+  return { variantsDifferIn, sameRatingForAll };
+}
 
 /**
  * Official EPA ratings for a model year, make and model: the matched variants (engine,
@@ -151,20 +178,23 @@ export async function lookupFuelEconomy(q: VehicleQuery, opts: { fetcher?: JsonF
     async (): Promise<FuelEconomyResult> => {
       try {
         const make = await epaMake(year, q.make, get);
-        if (!make) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no ${q.make} vehicles for ${year}.` };
+        if (!make) return { status: "not_found", source: EPA_SOURCE, query, note: `“${q.make}” isn't in the EPA data AutoDyn retrieved for ${year} (coverage limitation — not evidence the vehicle doesn't exist).` };
         const models = matchModels(
           menu(await get(`/vehicle/menu/model?year=${year}&make=${encodeURIComponent(make)}`)).map((m) => m.value),
           q.model,
           prefer,
         ).slice(0, 3);
-        if (!models.length) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA has no ${year} ${make} model matching “${q.model}”.` };
+        if (!models.length) return { status: "not_found", source: EPA_SOURCE, query, note: `No ${year} ${make} entry matching “${q.model}” in the EPA data AutoDyn retrieved (coverage limitation — the name may differ; not evidence the vehicle doesn't exist).` };
         const options = await Promise.all(models.map(async (m) => menu(await get(optionsPath(year, make, m.name))).map((o) => ({ model: m.name, option: o.text, id: o.value }))));
+        // A transmission the user named ("manual", "automatic") narrows the options when EPA lists it.
+        const trans = prefer.includes("manual") ? /^man/i : prefer.includes("automatic") ? /^auto/i : null;
+        if (trans && options.some((o) => o.some((x) => trans.test(x.option)))) for (let k = 0; k < options.length; k++) options[k] = options[k].filter((x) => trans.test(x.option));
         const total = options.reduce((n, o) => n + o.length, 0);
         // Round-robin across matched models so coupe and convertible (or AWD and RWD) both show.
         const max = opts.maxVariants ?? 4;
         const picked: { model: string; option: string; id: string }[] = [];
         for (let i = 0; picked.length < max && options.some((o) => o[i]); i++) for (const o of options) if (o[i] && picked.length < max) picked.push(o[i]);
-        if (!/^\d+$/.test(picked[0]?.id ?? "")) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no variants for ${year} ${make} ${q.model}.` };
+        if (!/^\d+$/.test(picked[0]?.id ?? "")) return { status: "not_found", source: EPA_SOURCE, query, note: `The EPA data AutoDyn retrieved has no variants for ${year} ${make} ${q.model} (coverage limitation).` };
         const variants = await Promise.all(
           picked.map(async (p): Promise<FuelEconomyVariant | null> => {
             if (!/^\d+$/.test(p.id)) return null;
@@ -187,7 +217,7 @@ export async function lookupFuelEconomy(q: VehicleQuery, opts: { fetcher?: JsonF
         );
         const found = variants.filter((v): v is FuelEconomyVariant => !!v);
         if (!found.length) return { status: "unavailable", source: EPA_SOURCE, query, note: "EPA vehicle records could not be read." };
-        return { status: "found", source: EPA_SOURCE, query, retrieved: new Date().toISOString(), variants: found, totalVariants: total };
+        return { status: "found", source: EPA_SOURCE, query, retrieved: new Date().toISOString(), variants: found, totalVariants: total, ...differences(found) };
       } catch {
         return { status: "unavailable", source: EPA_SOURCE, query, note: "fueleconomy.gov did not respond in time." };
       }
@@ -217,9 +247,9 @@ export async function lookupVariants(q: VehicleQuery, opts: { fetcher?: JsonFetc
     async (): Promise<VariantListResult> => {
       try {
         const make = await epaMake(year, q.make, get);
-        if (!make) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no ${q.make} vehicles for ${year}.` };
+        if (!make) return { status: "not_found", source: EPA_SOURCE, query, note: `“${q.make}” isn't in the EPA data AutoDyn retrieved for ${year} (coverage limitation — not evidence the vehicle doesn't exist).` };
         const models = matchModels(menu(await get(`/vehicle/menu/model?year=${year}&make=${encodeURIComponent(make)}`)).map((m) => m.value), q.model, []).slice(0, 8);
-        if (!models.length) return { status: "not_found", source: EPA_SOURCE, query, note: `EPA lists no ${year} ${make} model matching “${q.model}” (U.S. market).` };
+        if (!models.length) return { status: "not_found", source: EPA_SOURCE, query, note: `No ${year} ${make} entry matching “${q.model}” in the EPA data AutoDyn retrieved (coverage limitation — not evidence it doesn't exist).` };
         const withOptions = await Promise.all(models.map(async (m) => ({ name: m.name, options: menu(await get(optionsPath(year, make, m.name))) })));
         const firstId = withOptions.flatMap((m) => m.options).find((o) => /^\d+$/.test(o.value))?.value;
         return {
@@ -227,7 +257,7 @@ export async function lookupVariants(q: VehicleQuery, opts: { fetcher?: JsonFetc
           source: EPA_SOURCE,
           query: `${year} ${make} ${q.model}`,
           retrieved: new Date().toISOString(),
-          note: "Complete list of U.S. versions EPA rated for this model year; a drivetrain, body or engine missing here was not sold in the U.S. that year.",
+          note: "EPA's U.S. ratings list for this model year. A drivetrain, body or engine missing here was not EPA-rated under this model name — say it isn't in EPA's list for that year (strong evidence it wasn't sold in the U.S.), not that it never existed.",
           models: withOptions.map((m) => ({ name: m.name, versions: m.options.map((o) => o.text).slice(0, 6) })),
           url: firstId ? sbs(firstId) : "https://www.fueleconomy.gov/feg/findacar.shtml",
         };

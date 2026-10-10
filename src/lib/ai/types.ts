@@ -68,7 +68,8 @@ export type ProviderCode =
 export type AssistantErrorCode = ProviderCode | "rate_limited" | "invalid_request" | "message_too_long" | "duplicate" | "offline";
 
 /** Messages answered by the local relevance gate — no AI provider request was made. */
-export type LocalReplyKind = "off_topic" | "injection" | "clarify" | "small_talk";
+/** app_state: a question about AutoDyn answered from the current application state. */
+export type LocalReplyKind = "off_topic" | "injection" | "clarify" | "small_talk" | "app_state";
 
 export type ProviderHealth = {
   status: "ok" | ProviderCode;

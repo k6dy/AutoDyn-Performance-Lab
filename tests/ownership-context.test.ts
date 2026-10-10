@@ -24,7 +24,7 @@ const general = (reply = "Answer.", patch: Partial<ModelOutput> = {}): ModelOutp
   ...patch,
 });
 
-type Msg = { role: "user" | "assistant"; text: string; kind?: "local"; localKind?: "clarify" | "off_topic" | "injection" | "small_talk" };
+type Msg = { role: "user" | "assistant"; text: string; kind?: "local"; localKind?: "clarify" | "off_topic" | "injection" | "small_talk" | "app_state" };
 type Contents = { role: string; parts: { text: string }[] }[];
 
 const EPA_FOUND = (label: string): FuelEconomyResult => ({
@@ -33,6 +33,8 @@ const EPA_FOUND = (label: string): FuelEconomyResult => ({
   query: label,
   retrieved: "2026-10-10T00:00:00.000Z",
   totalVariants: 2,
+  variantsDifferIn: [],
+  sameRatingForAll: true,
   variants: [
     { label: `${label} — Auto (S8), 8 cyl, 5.0 L, Sup Charg`, cityMpg: 15, highwayMpg: 23, combinedMpg: 18, fuel: "Premium", electricRangeMiles: null, kwhPer100Miles: null, drive: "All-Wheel Drive", transmission: "Automatic (S8)", url: "https://www.fueleconomy.gov/feg/Find.do?action=sbs&id=38709" },
   ],

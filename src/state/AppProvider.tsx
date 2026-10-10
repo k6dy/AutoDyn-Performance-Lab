@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { appStateReply } from "@/lib/ai/appState";
 import { buildAssistantContext, pendingProposalOf } from "@/lib/ai/context";
 import type { AssistantErrorCode, AssistantResponse, AssistantStatus, DeploymentInfo, ProviderCode } from "@/lib/ai/types";
 import { AI_LIMITS, isBlocking, PROVIDER_MESSAGES } from "@/lib/ai/types";
@@ -10,7 +11,7 @@ import { verifyRecord } from "@/lib/persistence/integrity";
 import { getRepository, MemoryRepository, setRepository, STORAGE_MESSAGES, toStorageError, type AnalysisRepository } from "@/lib/persistence/repository";
 import { hasMeaningfulEdits } from "@/lib/persistence/snapshot";
 import { historyFor } from "@/lib/ai/history";
-import { classifyRelevance, localReply } from "@/lib/ai/relevance";
+import { classifyRelevance, declineNote, localReply } from "@/lib/ai/relevance";
 import { generateTitle, shortVehicle } from "@/lib/ai/titles";
 import { describeTopic, type Topic } from "@/lib/ai/topic";
 import type { SpecSet } from "@/lib/domain/types";
@@ -28,10 +29,22 @@ import {
   type StoredMessage,
 } from "@/lib/persistence/conversations";
 import { vehicleLabel } from "@/lib/vehicles/normalize";
-import { runAnalysis } from "@/lib/physics/analysis";
+import { ENGINE_VERSION, runAnalysis } from "@/lib/physics/analysis";
 import { initialState, isStale, NEW_CHAT_TITLE, reducer, type Action, type AppState, type ChatMessage, type ChatState } from "@/state/reducer";
 
 const ACTIVE_CHAT_KEY = "autodyn:chat:active";
+
+/** The assistant context from the actual workspace: configuration, results (with saved-snapshot state) and any proposal awaiting Apply. */
+function contextOf(s: AppState) {
+  const snap = s.saved.snapshot;
+  return buildAssistantContext(
+    s.config,
+    s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null,
+    s.ui.units,
+    pendingProposalOf(Object.values(s.chat.proposals)),
+    snap ? { savedAt: snap.createdAt, engineCurrent: snap.engineVersion === ENGINE_VERSION } : null,
+  );
+}
 
 /** Local title: the tracked vehicle subject ("Jaguar V8") or the user's words, then the subject's other parts, else the default. */
 function titleFor(userTexts: string[], vehicle: SpecSet | null, topic: Topic | null) {
@@ -178,7 +191,7 @@ const toStored = (m: ChatMessage): StoredMessage => {
 
 /** The stored form of the open conversation (null until it has a message worth keeping). */
 function conversationOf(chat: ChatState): Conversation | null {
-  if (!chat.id || !chat.messages.some((m) => m.kind !== "local" || m.localKind === "clarify")) return null;
+  if (!chat.id || !chat.messages.some((m) => m.kind !== "local" || m.localKind === "clarify" || m.localKind === "app_state")) return null;
   const last = Math.max(...chat.messages.map((m) => m.createdAt || 0), Date.parse(chat.createdAt ?? "") || 0);
   return withDerived({
     id: chat.id,
@@ -489,7 +502,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (typeof navigator !== "undefined" && navigator.onLine === false) return fails("offline");
       inflightChats.current.add(conversationId);
       const s = latest.current;
-      const context = buildAssistantContext(s.config, s.result ? { analysis: s.result.analysis, stale: isStale(s) } : null, s.ui.units, pendingProposalOf(Object.values(s.chat.proposals)));
+      const context = contextOf(s);
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 30000);
       fetch("/api/assistant", {
@@ -528,6 +541,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const relevance = classifyRelevance(message, { history, hasVehicle: !!vehicle, hasResults: !!s.result });
       const userTexts = [...s.chat.messages.filter((m) => m.role === "user" && (m.kind !== "local" || m.localKind === "clarify")).map((m) => m.text), message];
       const title = s.chat.customTitle || s.chat.title !== NEW_CHAT_TITLE || relevance.decision === "reject" ? null : titleFor(userTexts, vehicle ?? s.chat.vehicle, relevance.topic);
+      // Questions about AutoDyn's own state ("Have you run it yet?") are answered from that state, locally.
+      const appAnswer = relevance.decision === "allow" ? appStateReply(relevance.supported ?? message, contextOf(s)) : null;
+      const appReply = appAnswer && relevance.declined?.length ? `${appAnswer}\n\n${declineNote(relevance.declined)}` : appAnswer;
+      if (appReply) {
+        dispatch({ type: "chatLocal", conversationId, vehicle, localKind: "app_state", title, message: userMessage, reply: { id: `l-${userMessage.id}`, role: "assistant", text: appReply, createdAt: now } });
+        return;
+      }
       if (relevance.decision !== "allow") {
         const localKind = relevance.decision === "clarify" ? "clarify" : relevance.decision === "small_talk" ? "small_talk" : relevance.basis === "injection" ? "injection" : "off_topic";
         dispatch({

@@ -1326,6 +1326,24 @@ describe("formatted assistant answers", () => {
   });
 });
 
+describe("questions about AutoDyn's own state", () => {
+  it("'Have you actually run the simulation yet?' is answered from the real state, locally, and kept after a reload", async () => {
+    const { unmount } = renderApp();
+    await loadC300();
+    await openAssistant();
+    await ask("Have you actually run the simulation yet?");
+    await within(chatLog()).findByText(/No — nothing has been simulated yet\./);
+    expect(screen.getByText(/from AutoDyn's current state, no AI request/)).toBeTruthy();
+    expect(within(chatLog()).queryByText(OFF_TOPIC_REPLY)).toBeNull();
+    expect(assistantCalls).toBe(0);
+    await waitFor(() => expect(chatItems()).toHaveLength(1));
+    unmount();
+    renderApp();
+    await openAssistant();
+    await waitFor(() => expect(within(chatLog()).getByText(/No — nothing has been simulated yet\./)).toBeTruthy(), { timeout: 5000 });
+  });
+});
+
 describe("verified sources under answers", () => {
   it("show official links with retrieval dates, open safely, and survive a reload", async () => {
     routes["/api/assistant"] = async (req) => {

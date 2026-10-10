@@ -40,6 +40,7 @@ import {
   TASK_OFF_WORDS,
   type AspectId,
 } from "@/lib/ai/lexicon";
+import { isAppQuestion } from "@/lib/ai/appState";
 import { splitParts } from "@/lib/ai/responsePlan";
 import { aspectClarify, deriveTopic, extractTopic, hasContext, hasSubject, needsReferent, pointsAtThing, referenceCue, type Topic } from "@/lib/ai/topic";
 
@@ -61,7 +62,7 @@ export type Relevance = {
   outcome: Outcome;
   /** allow = may reach the provider; everything else is answered locally with `reply`. */
   decision: "allow" | "clarify" | "reject" | "small_talk";
-  basis: "automotive" | "clarified" | "follow_up" | "workspace" | "ambiguous" | "off_topic" | "injection" | "small_talk";
+  basis: "automotive" | "app" | "clarified" | "follow_up" | "workspace" | "ambiguous" | "off_topic" | "injection" | "small_talk";
   score: number;
   /** The conversation's subject after this message (null when none is established). */
   topic: Topic | null;
@@ -343,6 +344,9 @@ function classifyOne(message: string, ctx: RelevanceContext): Relevance {
   const definite = e.pos - e.ambiguousScore;
   if (e.task > 0) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
   if (e.neg > 0 && definite < Math.max(ALLOW_AT, e.neg + W_MEDIUM)) return result("OFF_TOPIC", "off_topic", OFF_TOPIC_REPLY);
+  // 3b. Questions about AutoDyn itself — its simulation, proposals, results, feasibility, saving —
+  //     are always in scope ("Have you actually run the simulation yet?").
+  if (isAppQuestion(text)) return result("AUTOMOTIVE", "app");
 
   // 4. The answer to our own "cars or the animal?" question.
   const last = ctx.history.at(-1);

@@ -32,7 +32,7 @@ export type ChatMessage = {
   suggestedAction?: SuggestedAction;
   /** results: deterministic summary after an assistant-applied run · local: answered by the relevance gate. */
   kind?: "results" | "local";
-  localKind?: "clarify" | "off_topic" | "injection" | "small_talk";
+  localKind?: "clarify" | "off_topic" | "injection" | "small_talk" | "app_state";
   /** User message whose request failed; kept for retry and never sent as history. */
   failed?: boolean;
   /** Saved analysis produced by this run (results messages). */

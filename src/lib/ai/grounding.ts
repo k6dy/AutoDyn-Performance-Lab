@@ -17,7 +17,7 @@ export type OwnershipSources = {
 
 
 export type FuelCostData =
-  | { kind: "fuel_cost"; status: "calculated"; method: string; lines: FuelCostLine[]; inputs: { price: string; distance: string; mpgSource: string } }
+  | { kind: "fuel_cost"; status: "calculated"; method: string; lines: (FuelCostLine & { appliesTo: string[] })[]; inputs: { price: string; distance: string; mpgSource: string } }
   | { kind: "fuel_cost"; status: "needs_input"; missing: string[]; note: string };
 
 export type Grounding = FuelEconomyResult | RecallResult | VariantListResult | FuelCostData;
@@ -27,7 +27,7 @@ const SPEC_ASPECTS: (AspectId | null)[] = ["specs", "performance", "towing", "pr
 const MY_VEHICLE = /\b(?:my|this|the current|our)\s+(?:\w+\s+){0,2}?(?:car|vehicle|ride|truck|build|setup)\b/i;
 const AVAILABILITY = /\b(?:awd|xdrive|4matic|quattro|4wd|rwd|fwd|2wd|all[- ]wheel|rear[- ]wheel|manual|stick|automatic|dct|transmission|gearbox|drivetrain|available|offered|come (?:in|with)|versions?|variants?|trims?|which engines?)\b/i;
 const COST_WORDS = /\$|\b(?:cost|costs|spend|spending|price|budget|money|how much|per (?:month|year|week)|a (?:month|year|week))\b/i;
-const PREFER = /\b(awd|xdrive|4matic|quattro|4wd|4x4|rwd|fwd|2wd|coupe|convertible|sedan|wagon|hatchback|cabriolet)\b/gi;
+const PREFER = /\b(awd|xdrive|4matic|quattro|4wd|4x4|rwd|fwd|2wd|coupe|convertible|sedan|wagon|hatchback|cabriolet|manual|stick|automatic|auto|dct|dual[- ]clutch)\b/gi;
 const USER_MPG = /\b(\d{1,2}(?:\.\d)?)\s*mpg\b/i;
 
 /** Drivetrain and body words the user used, latest last ("the AWD coupe") — they pick EPA variants. */
@@ -36,7 +36,9 @@ function preferences(userTexts: string[]) {
   const awd = ["awd", "xdrive", "4matic", "quattro", "4wd", "4x4"];
   const lastDrive = [...words].reverse().find((w) => awd.includes(w) || ["rwd", "fwd", "2wd"].includes(w));
   const lastBody = [...words].reverse().find((w) => ["coupe", "convertible", "sedan", "wagon", "hatchback", "cabriolet"].includes(w));
-  return [lastDrive, lastBody].filter((w): w is string => !!w);
+  const lastTrans = [...words].reverse().find((w) => ["manual", "stick", "automatic", "auto", "dct", "dual-clutch", "dual clutch"].includes(w));
+  const trans = lastTrans ? (["manual", "stick"].includes(lastTrans) ? "manual" : "automatic") : undefined;
+  return [lastDrive, lastBody, trans].filter((w): w is string => !!w);
 }
 
 /** Vehicles to look up: those the conversation pins down, else the Manual Setup vehicle when the user means it. */
@@ -66,8 +68,12 @@ function fuelCostFor(ratings: FuelEconomyResult[], userTexts: string[]): FuelCos
   if (missing.length) return { kind: "fuel_cost", status: "needs_input", missing, note: "Do not estimate a fuel cost until these are known; you may show the method: miles ÷ MPG × price per gallon." };
   const seen = new Set<number>();
   const lines = variants.length
-    ? variants.filter((v) => !seen.has(v.combinedMpg!) && seen.add(v.combinedMpg!)).slice(0, 3).map((v) => fuelCost(v.label, v.combinedMpg!, distance!, price!))
-    : [fuelCost("the user's stated fuel economy", Number(userMpg![1]), distance!, price!)];
+    ? variants
+        .filter((v) => !seen.has(v.combinedMpg!) && seen.add(v.combinedMpg!))
+        .slice(0, 3)
+        // Variants sharing a rating are named explicitly (a coupe's figure is never passed off as a convertible's).
+        .map((v) => ({ ...fuelCost(v.label, v.combinedMpg!, distance!, price!), appliesTo: variants.filter((x) => x.combinedMpg === v.combinedMpg).map((x) => x.label) }))
+    : [{ ...fuelCost("the user's stated fuel economy", Number(userMpg![1]), distance!, price!), appliesTo: [] }];
   return {
     kind: "fuel_cost",
     status: "calculated",

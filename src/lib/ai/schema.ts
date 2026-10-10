@@ -31,6 +31,8 @@ export const contextSchema = z
         sensitivity: z.array(shortText(160)).max(10),
         estimatedInputs: z.array(shortText(160)).max(20),
         feasibility: z.array(shortText(700)).max(12).optional(),
+        /** The results on screen are a stored snapshot (opened from Saved Analyses), not computed in this session. */
+        savedSnapshot: z.object({ savedAt: shortText(40), engineCurrent: z.boolean() }).nullable().optional(),
         dataQuality: shortText(80),
       })
       .nullable(),

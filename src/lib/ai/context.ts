@@ -46,6 +46,7 @@ export function buildAssistantContext(
   result: { analysis: AnalysisResult; stale: boolean } | null,
   units: UnitSystem,
   pending: PendingProposal | null = null,
+  snapshot: { savedAt: string; engineCurrent: boolean } | null = null,
 ): AssistantContext {
   const stock = config.stock;
   const values = effectiveValues(config, "stock");
@@ -107,6 +108,7 @@ export function buildAssistantContext(
             .slice(0, 10),
           estimatedInputs: Array.from(new Set([...r.stock.estimates, ...(r.modified?.estimates ?? [])].filter((e) => e.key !== "launchRpm").map((e) => clip(`${SPEC_LABEL[e.key as SpecKey]}: ${e.reason}`, 160)))).slice(0, 20),
           dataQuality: `Stock ${r.stock.quality.level}${r.modified ? `, modified ${r.modified.quality.level}` : ""}`,
+          savedSnapshot: snapshot,
           feasibility: [r.feasibility.stock, r.feasibility.modified]
             .filter((a): a is NonNullable<typeof a> => !!a)
             .flatMap((a) => [

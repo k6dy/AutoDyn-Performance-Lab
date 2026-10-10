@@ -22,7 +22,7 @@ export type StoredMessage = {
   /** results: deterministic engine summary · local: answered by the relevance gate (no AI call). */
   kind?: "results" | "local";
   /** For local replies: why the gate answered without the provider (clarify turns stay in context). */
-  localKind?: "clarify" | "off_topic" | "injection" | "small_talk";
+  localKind?: "clarify" | "off_topic" | "injection" | "small_talk" | "app_state";
   notices?: string[];
   /** Official sources shown under the answer (EPA / NHTSA pages, retrieval date). */
   sources?: { label: string; url: string; retrieved: string }[];
@@ -69,7 +69,7 @@ export const storedMessageSchema = z.object({
   text: z.string().max(MAX_MESSAGE_TEXT),
   createdAt: z.number().finite(),
   kind: z.enum(["results", "local"]).optional(),
-  localKind: z.enum(["clarify", "off_topic", "injection", "small_talk"]).optional(),
+  localKind: z.enum(["clarify", "off_topic", "injection", "small_talk", "app_state"]).optional(),
   notices: z.array(z.string().max(600)).max(10).optional(),
   // Only official government pages are kept, so a restored record can't carry arbitrary links; an
   // invalid entry is dropped without discarding the conversation.

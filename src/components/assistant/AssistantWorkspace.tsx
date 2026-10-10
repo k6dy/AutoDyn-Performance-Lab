@@ -149,7 +149,7 @@ function Message({ m, proposal }: { m: ChatMessage; proposal?: ProposalState }) 
         {m.kind === "results" ? "Physics engine" : "AutoDyn assistant"}
         {m.kind === "results" && <ProvenanceTag provenance="verified" title="Computed deterministically — not AI-generated" />}
         {m.kind === "local" && (
-          <span className="font-normal tracking-normal normal-case">{m.localKind === "clarify" ? "· clarifying locally, no AI request" : "· answered locally, no AI request"}</span>
+          <span className="font-normal tracking-normal normal-case">{m.localKind === "clarify" ? "· clarifying locally, no AI request" : m.localKind === "app_state" ? "· from AutoDyn's current state, no AI request" : "· answered locally, no AI request"}</span>
         )}
       </div>
       <div className={cx("text-[14px] leading-6 [overflow-wrap:anywhere]", m.errorCode ? "text-[#f5a8a8]" : "text-ink", m.kind === "results" && "num text-[13px]")}>
@@ -411,7 +411,7 @@ function ChatHeader({ onHistory, sidebarOpen, onRename }: { onHistory: (inline: 
         </Button>
       )}
       <div className="min-w-0 flex-1">
-        {c.id && c.messages.some((m) => m.kind !== "local" || m.localKind === "clarify") ? (
+        {c.id && c.messages.some((m) => m.kind !== "local" || m.localKind === "clarify" || m.localKind === "app_state") ? (
           <button type="button" onClick={onRename} className="group flex max-w-full items-center gap-1.5 rounded-sm text-left" aria-label={`Rename conversation: ${c.title}`}>
             <span key={c.id} className="animate-fade truncate text-[14px] font-medium text-ink">
               {c.title}

@@ -6,8 +6,9 @@ import { buildChanges, cleanReply, clipText, completedPart, salvageReply, saniti
 import { modelOutputSchema, requestSchema, type AssistantRequest, type ModelOutput } from "@/lib/ai/schema";
 import type { AssistantErrorCode, AssistantResponse, Proposal, SuggestedAction, VehicleProposal } from "@/lib/ai/types";
 import { AI_LIMITS, PROVIDER_MESSAGES, SHORTENED_NOTICE } from "@/lib/ai/types";
+import { appStateReply } from "@/lib/ai/appState";
 import { gatherGrounding, sourcesOf, type OwnershipSources } from "@/lib/ai/grounding";
-import { stripUnbackedPerformance, stripUnverifiedMoney } from "@/lib/ai/guards";
+import { stripFalseAttribution, stripUnbackedPerformance, stripUnmodeledClaims, stripUnverifiedMoney } from "@/lib/ai/guards";
 import { classifyRelevance, declineNote, isInjection, localReply } from "@/lib/ai/relevance";
 import { OUTPUT_BUDGET, planResponse } from "@/lib/ai/responsePlan";
 import { describeTopic } from "@/lib/ai/topic";
@@ -219,6 +220,13 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
       },
     };
   }
+  // Questions about AutoDyn's own state ("Have you run it yet?") are answered from the request's
+  // application state — authoritative, and without a provider call.
+  const appReply = appStateReply(relevance.supported ?? req.message, req.context);
+  if (appReply) {
+    const reply = relevance.declined?.length ? `${appReply}\n\n${declineNote(relevance.declined)}` : appReply;
+    return { status: 200, body: { ok: true, requestId: req.requestId, reply, followUpQuestion: null, proposal: null, suggestedAction: null, notices: [], local: "app_state" } };
+  }
   if (!deps.configured) return fail("not_configured", req.requestId);
   // How deep and in what shape to answer is decided locally and sent with the one provider request.
   // Follow-ups include clearly automotive messages that build on the current subject ("Which ones are supercharged?").
@@ -333,6 +341,18 @@ export async function handleAssistantRequest(raw: unknown, deps: AssistantDeps):
   if (money.removed) {
     reply = money.text || "AutoDyn has no verified pricing for this, so it won't quote a figure.";
     notices.push("Unverified dollar amounts were left out — AutoDyn has no live market, insurance or repair-price data.");
+  }
+  // A specification credited to a verified source (EPA, "verified", "official") must be in AutoDyn's data.
+  const attribution = stripFalseAttribution(reply, known);
+  if (attribution.removed) {
+    reply = attribution.text || "AutoDyn doesn't have a verified source for that specification.";
+    notices.push("A specification credited to a verified source wasn't in AutoDyn's data and was left out. EPA data covers fuel economy, not horsepower or torque.");
+  }
+  // The feasibility engine doesn't model cooling, thermal stress or component tolerances.
+  const unmodeled = stripUnmodeledClaims(reply);
+  if (unmodeled.removed) {
+    reply = unmodeled.text || "AutoDyn's feasibility engine doesn't model that.";
+    notices.push("AutoDyn's simulation doesn't model cooling, thermal stress or stock component tolerances — treat those as unverified mechanical considerations.");
   }
   const figures = unverifiedFigures(reply, known).filter((f) => !f.includes("$"));
   if (figures.length) notices.push(`Not verified by AutoDyn (general knowledge): ${figures.join(", ")}.`);

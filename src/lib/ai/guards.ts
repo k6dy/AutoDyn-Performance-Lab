@@ -56,6 +56,32 @@ export function stripUnbackedPerformance(reply: string, knownText: string, opts:
   return filterSentences(reply, (s) => COMPLETION_CLAIM.test(s) || (opts.figures && PERF_WORDS.test(s) && unknownFigure(s)));
 }
 
+const VERIFIED_CLAIM = /\b(?:verified|confirmed|official(?:ly)?|EPA|fueleconomy(?:\.gov)?|according to (?:the |autodyn's )?(?:data|dataset)|manufacturer[- ](?:rated|spec\w*|states?|lists?))\b/i;
+const SPEC_FIGURE = /(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?:hp|horsepower|bhp|ps|kw|lb[-·\s]?ft|pound[-\s]feet|n[·.\s]?m)\b/gi;
+
+/**
+ * Removes sentences that credit a horsepower/torque figure to a verified source (EPA, "verified",
+ * the manufacturer) when the figure isn't in AutoDyn's data — EPA data never verifies engine output.
+ */
+export function stripFalseAttribution(reply: string, knownText: string) {
+  const known = numbersIn(knownText);
+  return filterSentences(reply, (s) => VERIFIED_CLAIM.test(s) && [...s.matchAll(SPEC_FIGURE)].some((m) => !known.some((k) => Math.abs(k - Number(m[1].replace(/,/g, ""))) < 0.51)));
+}
+
+const SIM_SUBJECT = /\b(?:feasibility|simulation|simulator|physics engine|autodyn|the (?:engine|model|analysis|assessment))\b/i;
+const SIM_VERB = /\b(?:models?|modell?ed|evaluat\w*|accounts? for|accounted for|checks?|checked|consider(?:s|ed)?|assess(?:es|ed)?|includ(?:es|ed)|factors? in|factored in|captures?|simulat(?:es|ed)|calculat(?:es|ed)|predicts?|verif(?:ies|ied))\b/i;
+const UNMODELED = /\b(?:thermal|heat(?:[- ]soak)?|cooling|coolant|temperatures? of|tolerances?|stress(?:es)?|fatigue|durability|longevity|wear|fuel (?:system|delivery|pump)|injectors?|internals|component strength|knock|detonation|oil starvation)\b/i;
+const NEGATED = /\b(?:not|doesn't|does not|isn't|is not|cannot|can't|no|without|outside|beyond|unverified|ignores?)\b/i;
+
+/**
+ * Removes sentences claiming AutoDyn's simulation or feasibility engine evaluates things it doesn't
+ * model (cooling, thermal stress, stock component tolerances, fuel delivery, durability). Sentences
+ * that say AutoDyn does NOT model them are kept.
+ */
+export function stripUnmodeledClaims(reply: string) {
+  return filterSentences(reply, (s) => SIM_SUBJECT.test(s) && SIM_VERB.test(s) && UNMODELED.test(s) && !NEGATED.test(s));
+}
+
 /** Removes sentences with dollar figures that AutoDyn's data, the conversation or the user didn't supply. */
 export function stripUnverifiedMoney(reply: string, knownText: string) {
   const known = numbersIn(knownText);
