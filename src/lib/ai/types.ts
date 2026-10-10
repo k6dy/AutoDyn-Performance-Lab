@@ -78,10 +78,12 @@ export type ProviderHealth = {
   reason?: string;
   checkedAt: string;
   latencyMs: number | null;
-  source: "probe" | "request";
+  /** request: a real assistant call · probe: token-protected generation test · access: key and
+   *  model verified via model metadata (no generation, no token quota used). */
+  source: "probe" | "request" | "access";
 };
 
-export type DeploymentInfo = { environment: string; branch: string | null; commit: string | null; project?: string | null };
+export type DeploymentInfo = { environment: string; branch: string | null; commit: string | null; project?: string | null; url?: string | null };
 
 export type AssistantStatus = {
   configured: boolean;
@@ -90,6 +92,8 @@ export type AssistantStatus = {
   provider: ProviderHealth | null;
   /** Non-secret configuration findings (e.g. quoted key, normalized model id). */
   configNotes?: string[];
+  /** Which expected variables exist in this deployment's runtime (presence only, never values). */
+  env?: { GEMINI_API_KEY: boolean; GEMINI_MODEL: boolean };
 };
 
 /** Codes after which sending more messages cannot succeed until configuration changes. */

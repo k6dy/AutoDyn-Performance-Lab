@@ -57,9 +57,35 @@ function PlainText({ text }: { text: string }) {
 
 export function statusText(s: AiStatus) {
   if (s.phase === "checking") return "Checking AI connection…";
-  if (s.phase === "ready") return "Connected";
+  if (s.phase === "ready") return s.verifiedBy === "access" ? "Connected — API key and model verified" : "Connected";
   if (s.phase === "untested") return "Configured — connection not yet verified";
   return s.code ? PROVIDER_MESSAGES[s.code] : AI_UNAVAILABLE_MESSAGE;
+}
+
+/** Exact remedy for a deployment whose server runtime has no Gemini key. */
+function SetupSteps() {
+  const { aiStatus } = useApp();
+  const d = aiStatus.deployment;
+  const missing = ["GEMINI_API_KEY", aiStatus.env && !aiStatus.env.GEMINI_MODEL ? "GEMINI_MODEL" : null].filter(Boolean).join(" and ");
+  if (!d || d.environment === "local") {
+    return <p className="mt-1 text-xs leading-4 text-muted">Add {missing} to .env.local and restart the server.</p>;
+  }
+  const env = d.environment === "production" ? "Production" : "Preview";
+  return (
+    <ol className="mt-1.5 list-decimal space-y-0.5 pl-4 text-xs leading-4 text-muted" data-testid="ai-setup-steps">
+      <li>
+        This {env.toLowerCase()} deployment&apos;s server runtime has no {missing}. Variables are attached when a deployment is created.
+      </li>
+      <li>
+        In Vercel, open the project that serves this URL{d.project ? ` (production domain ${d.project})` : ""} → Settings → Environment Variables. If several projects deploy this
+        repository, the variables must be on this one.
+      </li>
+      <li>
+        Add {missing} for the {env} environment{env === "Preview" && d.branch ? ` (all Preview branches, or branch “${d.branch}”)` : ""}.
+      </li>
+      <li>Redeploy{d.branch ? ` ${d.branch}` : ""} — existing deployments never receive variables added later.</li>
+    </ol>
+  );
 }
 
 function ConnectionBar() {
@@ -98,6 +124,7 @@ function ConnectionBar() {
           {aiStatus.detail && <span className="text-faint"> (provider response: {aiStatus.detail})</span>}
         </p>
       )}
+      {aiStatus.code === "not_configured" && <SetupSteps />}
       {aiStatus.servedBy && <p className="mt-1 text-xs text-warning">Configured model unavailable — answered by fallback model {aiStatus.servedBy}.</p>}
       {(bad || aiStatus.phase === "untested") && aiStatus.configNotes?.map((n) => (
         <p key={n} className="mt-1 text-xs text-warning">

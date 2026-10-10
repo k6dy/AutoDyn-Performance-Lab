@@ -153,24 +153,53 @@ export function SensitivityChart({ result, label }: { result: ScenarioResult; la
   const reduced = useReducedMotion();
   const data = result.sensitivity
     .filter((s) => s.favorable060 != null && s.unfavorable060 != null)
-    .map((s) => ({ name: `${s.label} (${s.change})`, better: Number(s.favorable060!.toFixed(3)), worse: Number(s.unfavorable060!.toFixed(3)) }))
+    .map((s) => ({
+      name: `${s.label} (${s.change})`,
+      better: Number(s.favorable060!.toFixed(3)),
+      worse: Number(s.unfavorable060!.toFixed(3)),
+      betterLabel: s.favorableLabel ?? "Usually favorable direction",
+      worseLabel: s.unfavorableLabel ?? "Usually unfavorable direction",
+    }))
     .sort((a, b) => Math.abs(b.worse - b.better) - Math.abs(a.worse - a.better));
+  const notes = result.sensitivity.filter((s) => s.note);
   return (
-    <ChartFrame
-      title={`Sensitivity of 0–60 mph — ${label}`}
-      caption="Change in 0–60 time when each input moves by the stated amount. Longer bars = assumptions that matter more."
-      height={Math.max(220, data.length * 34 + 60)}
-    >
-      <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 4 }} barGap={-12} barCategoryGap={8}>
-        <CartesianGrid stroke={GRID} horizontal={false} />
-        <XAxis type="number" {...axisProps} tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}s`} />
-        <YAxis type="category" dataKey="name" width={150} {...axisProps} tick={{ fill: "#a9adb2", fontSize: 11 }} />
-        <ReferenceLine x={0} stroke="#5a6066" />
-        <Tooltip {...tooltipStyle} cursor={{ fill: "rgba(255,255,255,0.03)" }} formatter={(v) => [`${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(2)} s`]} />
-        <Bar dataKey="better" name="Favorable change" fill={FEASIBILITY_COLORS.feasible} barSize={12} isAnimationActive={!reduced} />
-        <Bar dataKey="worse" name="Unfavorable change" fill={FEASIBILITY_COLORS.insufficient_data} barSize={12} isAnimationActive={!reduced} />
-      </BarChart>
-    </ChartFrame>
+    <figure className="print-plain print-break min-w-0 rounded-lg border border-line bg-surface">
+      <figcaption className="border-b border-line px-4 py-3">
+        <div className="text-[14px] font-semibold tracking-tight">{`Sensitivity of 0–60 mph — ${label}`}</div>
+        <div className="mt-0.5 text-xs leading-4 text-muted">
+          Change in 0–60 time when each input moves by the stated amount. Green: the direction that usually helps (more power, less mass, more grip, less drag); gray: the opposite. Longer bars = assumptions that matter more.
+        </div>
+      </figcaption>
+      <div className="px-1 pt-3 pb-1 sm:px-2" style={{ height: Math.max(220, data.length * 34 + 60) }}>
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} initialDimension={{ width: 520, height: Math.max(220, data.length * 34 + 60) }}>
+          <BarChart data={data} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 4 }} barGap={-12} barCategoryGap={8}>
+            <CartesianGrid stroke={GRID} horizontal={false} />
+            <XAxis type="number" {...axisProps} tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}s`} />
+            <YAxis type="category" dataKey="name" width={150} {...axisProps} tick={{ fill: "#a9adb2", fontSize: 11 }} />
+            <ReferenceLine x={0} stroke="#5a6066" />
+            <Tooltip
+              {...tooltipStyle}
+              cursor={{ fill: "rgba(255,255,255,0.03)" }}
+              formatter={(v, key, item) => {
+                const p = (item as { payload?: { betterLabel: string; worseLabel: string } }).payload;
+                return [`${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(2)} s`, key === "better" ? p?.betterLabel : p?.worseLabel];
+              }}
+            />
+            <Bar dataKey="better" name="better" fill={FEASIBILITY_COLORS.feasible} barSize={12} isAnimationActive={!reduced} />
+            <Bar dataKey="worse" name="worse" fill={FEASIBILITY_COLORS.insufficient_data} barSize={12} isAnimationActive={!reduced} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      {notes.length > 0 && (
+        <ul className="space-y-1 border-t border-line px-4 py-2.5 text-[11.5px] leading-4 text-muted" data-testid="sensitivity-notes">
+          {notes.map((s) => (
+            <li key={s.id}>
+              <span className="text-ink">{s.label}:</span> {s.note}
+            </li>
+          ))}
+        </ul>
+      )}
+    </figure>
   );
 }
 

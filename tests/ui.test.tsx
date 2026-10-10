@@ -17,6 +17,10 @@ import { datasetTrimToSpecSet } from "@/lib/vehicles/normalize";
 import { allDatasetTrims } from "@/lib/vehicles/dataset.server";
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { AppProvider } from "@/state/AppProvider";
+import { IDBFactory } from "fake-indexeddb";
+import { getRepository, IndexedDbRepository, MemoryRepository, setRepository, StorageError } from "@/lib/persistence/repository";
+import { buildBackup } from "@/lib/persistence/backup";
+import { buildRecord, fingerprint } from "@/lib/persistence/snapshot";
 
 type Handler = (req: Request) => Promise<Response> | Response;
 
@@ -71,6 +75,8 @@ beforeEach(() => {
   reducedMotion = false;
   window.localStorage.clear();
   window.sessionStorage.clear();
+  // Fresh IndexedDB per test (the real repository code path, backed by fake-indexeddb).
+  setRepository(new IndexedDbRepository(new IDBFactory()));
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -295,17 +301,26 @@ describe("Advanced Settings and validation", () => {
     expect(screen.getByText("Standard conditions")).toBeTruthy();
   });
 
-  it("does not restore state saved by earlier builds, and offers Start fresh for restored sessions", async () => {
+  it("does not restore state saved by earlier builds, and offers Continue / Start fresh for the last session", async () => {
     window.localStorage.setItem("autodyn:v2", JSON.stringify({ version: 2, config: { bogus: true } }));
     const { unmount } = renderApp();
     expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    expect(screen.queryByText(/Continue where you left off/)).toBeNull();
     await loadC300();
     await new Promise((r) => setTimeout(r, 400)); // persistence debounce
     unmount();
     renderApp();
-    expect(await screen.findByText(/Restored your previous session/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    // Offered, not applied automatically.
+    expect(await screen.findByText(/Continue where you left off/)).toBeTruthy();
     expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start fresh" }));
+    expect(screen.queryByText(/Continue where you left off/)).toBeNull();
+    expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 400));
+    cleanup();
+    renderApp();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/Continue where you left off/)).toBeNull(); // Start fresh discarded the draft
   });
 });
 
@@ -387,6 +402,10 @@ describe("AI Build Assistant", () => {
     expect(await screen.findByText("AI assistance is temporarily unavailable. Manual Setup is still ready to use.")).toBeTruthy();
     expect(screen.getByText(/Reason: AI assistance isn't configured on this deployment/)).toBeTruthy();
     expect(screen.getByText(/Deployment: preview · autodyn-v2 @ abc1234/)).toBeTruthy();
+    // Exact remedy: which environment, which branch, and that a redeploy is required.
+    const steps = screen.getByTestId("ai-setup-steps").textContent!;
+    expect(steps).toMatch(/Add GEMINI_API_KEY for the Preview environment \(all Preview branches, or branch “autodyn-v2”\)/);
+    expect(steps).toMatch(/Redeploy autodyn-v2 — existing deployments never receive variables added later/);
     expect((screen.getByLabelText(/Message the AI Build Assistant/) as HTMLTextAreaElement).disabled).toBe(true);
     fireEvent.click(screen.getAllByRole("button", { name: /Open Manual Setup/ })[0]);
     fireEvent.click(screen.getByRole("radio", { name: /Enter manually/ }));
@@ -542,6 +561,7 @@ describe("vehicle weight", () => {
     const stock = { ...baseline, values: { ...baseline.values, curbMassKg: { value: 0.4536, provenance: "user" } } };
     window.localStorage.setItem("autodyn:v3", JSON.stringify({ version: 3, config: { stock, modified: null, conditions: DEFAULT_CONDITIONS }, baseline, units: "imperial", messages: [] }));
     renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Continue last session" }));
     expect(await screen.findByText(/1 saved value was physically invalid and reset/)).toBeTruthy();
     expect(fieldValue("f-curbMassKg")).toBe("3417");
     expect(weightTag()).toBe("Verified");
@@ -563,7 +583,7 @@ describe("vehicle weight", () => {
     renderApp();
     await loadC300();
     setField("f-curbMassKg", "3300");
-    fireEvent.click(screen.getByRole("button", { name: /Reset configuration/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Reset changes/ }));
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     expect(fieldValue("f-curbMassKg")).toBe("3417");
     setField("f-curbMassKg", "3300");
@@ -710,6 +730,224 @@ describe("AI diagnostics display", () => {
     expect(screen.getByText(/Configuration: GEMINI_MODEL normalized/)).toBeTruthy();
     expect(screen.getByText(/auto-dyn-performance\.vercel\.app · autodyn-v2 @ abc1234/)).toBeTruthy();
     expect((screen.getByLabelText(/Message the AI Build Assistant/) as HTMLTextAreaElement).disabled).toBe(true);
+  });
+});
+
+const savedTab = () => screen.getByRole("tab", { name: /Saved/ });
+const rows = () => screen.queryAllByTestId("saved-row");
+const rowTitle = (r: HTMLElement) => r.querySelector("h3")!.textContent ?? "";
+async function savedIndicator() {
+  await waitFor(() => expect(screen.getAllByText(/Saved as/).length).toBeGreaterThan(0), { timeout: 5000 });
+}
+async function openSavedTab() {
+  fireEvent.click(savedTab());
+  await screen.findByRole("heading", { name: "Saved Analyses" });
+  await waitFor(() => expect(screen.queryByText(/Loading saved analyses/)).toBeNull());
+}
+const c300Trim = () => allDatasetTrims().find((t) => t.year === 2015 && t.model === "C300" && t.drive === "rear wheel drive" && /^C 300 4dr/.test(t.description ?? ""))!;
+
+describe("Saved Analyses", () => {
+  it("a completed analysis is saved automatically, survives a reload and reopens with identical results", async () => {
+    const { unmount } = renderApp();
+    await loadC300();
+    fireEvent.click(runButton());
+    const before = (await metricRow(/0–60 mph/)).textContent;
+    await savedIndicator();
+    await new Promise((r) => setTimeout(r, 400));
+    unmount(); // leave the site…
+    renderApp(); // …and come back in the same browser
+    fireEvent.click(await screen.findByRole("button", { name: "Start fresh" }));
+    expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    await openSavedTab();
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0].textContent).toMatch(/Stock analysis/);
+    expect(rows()[0].textContent).toMatch(/2015 Mercedes-Benz C300/);
+    expect(rows()[0].textContent).toMatch(/241 hp/);
+    expect(within(rows()[0]).getByText("Feasible")).toBeTruthy();
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: /^Open / }));
+    const after = (await metricRow(/0–60 mph/)).textContent;
+    expect(after).toBe(before);
+    expect(screen.getByRole("tab", { name: /Results/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText(/Saved snapshot from/)).toBeTruthy();
+    // Restored inputs are exact and editable.
+    fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
+    expect(fieldValue("f-curbMassKg")).toBe("3417");
+  });
+
+  it("identical re-runs don't add entries; stock and modified restore independently; rename, duplicate, delete, delete all", async () => {
+    renderApp();
+    await loadC300();
+    fireEvent.click(runButton());
+    await savedIndicator();
+    fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
+    fireEvent.click(runButton()); // identical configuration
+    await metricRow(/0–60 mph/);
+    await savedIndicator();
+    fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-peakPowerKw", "+40");
+    setField("d-curbMassKg", "-150");
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+    await waitFor(() => expect(screen.getAllByText(/Stock vs Modified · \+40 hp, −150 lb/).length).toBeGreaterThan(0), { timeout: 5000 });
+    await openSavedTab();
+    expect(rows()).toHaveLength(1); // the linked analysis was updated, not duplicated
+    expect(rows()[0].textContent).toMatch(/241 hp[\s\S]*281 hp/);
+
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: /^Rename / }));
+    const dialog = await screen.findByRole("dialog", { name: "Rename analysis" });
+    fireEvent.change(within(dialog).getByLabelText("Analysis title"), { target: { value: "Track build" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(rowTitle(rows()[0])).toBe("Track build"));
+
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: /^Duplicate / }));
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    const copyRow = () => rows().find((r) => rowTitle(r) === "Copy of Track build")!;
+    const originalRow = () => rows().find((r) => rowTitle(r) === "Track build")!;
+
+    // Open the copy, edit only Modified, re-run: the copy changes, the original does not.
+    fireEvent.click(within(copyRow()).getByRole("button", { name: /^Open / }));
+    await metricRow(/0–60 mph/);
+    fireEvent.click(screen.getByRole("tab", { name: /Manual/ }));
+    expect(fieldValue("f-peakPowerKw")).toBe("241");
+    setField("d-peakPowerKw", "+20");
+    expect(fieldValue("f-peakPowerKw")).toBe("241"); // stock independent of modified
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+    await openSavedTab();
+    await waitFor(() => expect(copyRow().textContent).toMatch(/261 hp/));
+    expect(originalRow().textContent).toMatch(/281 hp/);
+
+    fireEvent.click(within(copyRow()).getByRole("button", { name: /^Delete / }));
+    const del = await screen.findByRole("alertdialog", { name: "Delete this analysis?" });
+    fireEvent.click(within(del).getByRole("button", { name: "Delete analysis" }));
+    await waitFor(() => expect(rows()).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /Delete all/ }));
+    const all = await screen.findByRole("alertdialog", { name: /Delete all 1 saved analyses/ });
+    fireEvent.click(within(all).getByRole("button", { name: "Cancel" }));
+    expect(rows()).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /Delete all/ }));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete all 1" }));
+    expect(await screen.findByText("No saved analyses yet")).toBeTruthy();
+  });
+
+  it("search and sort", async () => {
+    const stock = datasetTrimToSpecSet(c300Trim());
+    const a = buildRecord({ result: runAnalysis({ stock, modified: null, conditions: { ...DEFAULT_CONDITIONS } }), baseline: stock, units: "imperial", origin: "auto", title: "Alpha", now: new Date("2026-01-01") });
+    const b = buildRecord({ result: runAnalysis({ stock, modified: null, conditions: { ...DEFAULT_CONDITIONS, elevationM: 1500 } }), baseline: stock, units: "imperial", origin: "auto", title: "Bravo", now: new Date("2026-03-01") });
+    await getRepository().putMany([a, b]);
+    renderApp();
+    await openSavedTab();
+    expect(rows().map(rowTitle)).toEqual(["Bravo", "Alpha"]);
+    fireEvent.click(screen.getByRole("radio", { name: "Oldest" }));
+    expect(rows().map(rowTitle)).toEqual(["Alpha", "Bravo"]);
+    fireEvent.change(screen.getByLabelText("Search saved analyses"), { target: { value: "brav" } });
+    expect(rows()).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText("Search saved analyses"), { target: { value: "c300" } });
+    expect(rows()).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText("Search saved analyses"), { target: { value: "porsche" } });
+    expect(screen.getByText(/No saved analyses match/)).toBeTruthy();
+  });
+
+  it("New Analysis clears only the workspace, keeps history and units, and confirms unsaved edits", async () => {
+    renderApp();
+    fireEvent.click(screen.getByRole("radio", { name: "Metric" }));
+    await loadC300();
+    fireEvent.click(runButton());
+    await savedIndicator();
+    fireEvent.click(screen.getAllByTestId("new-analysis")[0]); // saved → no confirmation needed
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("tab", { name: /Manual/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Metric" }).getAttribute("aria-checked")).toBe("true");
+
+    await loadC300();
+    setField("f-peakPowerKw", "150");
+    fireEvent.click(screen.getByTestId("new-analysis"));
+    const confirm = await screen.findByRole("alertdialog", { name: "Start a new analysis?" });
+    fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(fieldValue("f-peakPowerKw")).toBe("150");
+    fireEvent.click(screen.getByTestId("new-analysis"));
+    fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard and start new" }));
+    expect(screen.getByText(/Start by choosing a vehicle/)).toBeTruthy();
+    await openSavedTab();
+    expect(rows()).toHaveLength(1); // history kept
+  });
+
+  it("Continue last session restores the workspace and its saved results", async () => {
+    const { unmount } = renderApp();
+    await loadC300();
+    fireEvent.click(screen.getByRole("radio", { name: /Stock vs\. modified/ }));
+    setField("d-peakPowerKw", "+40");
+    fireEvent.click(runButton());
+    const before = (await metricRow(/0–60 mph/)).textContent;
+    await savedIndicator();
+    await new Promise((r) => setTimeout(r, 400));
+    unmount();
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Continue last session" }));
+    await waitFor(() => expect(fieldValue("f-peakPowerKw")).toBe("241"));
+    fireEvent.click(screen.getByRole("tab", { name: /Results/ }));
+    expect((await metricRow(/0–60 mph/)).textContent).toBe(before);
+  });
+
+  it("a full storage is reported with a working Retry; the result is not lost", async () => {
+    const mem = new MemoryRepository({ persistent: true });
+    mem.failNextWrite = new StorageError("quota", "Browser storage is full. Delete or export older analyses, then try again.");
+    setRepository(mem);
+    renderApp();
+    await loadC300();
+    fireEvent.click(runButton());
+    await metricRow(/0–60 mph/);
+    expect((await screen.findAllByText(/Not saved: Browser storage is full/)).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole("button", { name: /Retry/ })[0]);
+    await savedIndicator();
+    expect((await mem.list()).items).toHaveLength(1);
+  });
+
+  it("historical snapshots are labeled; recalculation saves a new analysis and keeps the original", async () => {
+    const stock = datasetTrimToSpecSet(c300Trim());
+    const old = buildRecord({ result: runAnalysis({ stock, modified: null, conditions: { ...DEFAULT_CONDITIONS } }), baseline: stock, units: "imperial", origin: "auto", title: "Old run" });
+    old.engineVersion = "autodyn-physics/1.0.0";
+    old.result = { ...old.result, engineVersion: old.engineVersion };
+    old.fingerprint = fingerprint(old.result.config, old.engineVersion);
+    await getRepository().put(old);
+    renderApp();
+    await openSavedTab();
+    expect(rows()[0].textContent).toMatch(/Historical · v1\.0\.0/);
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: /^Open / }));
+    expect(await screen.findByText(/Historical snapshot from/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Recalculate using current engine/ }));
+    expect(await screen.findByText(/Recalculated with the current engine/, undefined, { timeout: 8000 })).toBeTruthy();
+    await openSavedTab();
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(rows().map(rowTitle).sort()).toEqual(["Old run", "Old run (recalculated)"]);
+    expect((await getRepository().get(old.id)).engineVersion).toBe("autodyn-physics/1.0.0");
+  });
+
+  it("imports a validated backup and explains a malformed file", async () => {
+    const stock = datasetTrimToSpecSet(c300Trim());
+    const rec = buildRecord({ result: runAnalysis({ stock, modified: null, conditions: { ...DEFAULT_CONDITIONS } }), baseline: stock, units: "imperial", origin: "auto", title: "From laptop" });
+    renderApp();
+    await openSavedTab();
+    const input = screen.getByLabelText("Import a saved-analyses backup file") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["{oops"], "bad.json", { type: "application/json" })] } });
+    expect(await screen.findByText(/Not imported: The file isn't valid JSON/)).toBeTruthy();
+    fireEvent.change(input, { target: { files: [new File([buildBackup([rec])], "backup.json", { type: "application/json" })] } });
+    expect(await screen.findByText(/Imported 1 analysis/)).toBeTruthy();
+    await waitFor(() => expect(rows()).toHaveLength(1));
+    expect(rows()[0].textContent).toMatch(/From laptop[\s\S]*Imported/);
+    expect(screen.getByText(/don't sync across devices/)).toBeTruthy();
+  });
+
+  it("the Saved tab is reachable by keyboard", () => {
+    renderApp();
+    const manual = screen.getByRole("tab", { name: /Manual/ });
+    manual.focus();
+    fireEvent.keyDown(manual, { key: "ArrowLeft" });
+    expect(savedTab().getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(savedTab());
   });
 });
 

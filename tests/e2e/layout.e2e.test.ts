@@ -196,6 +196,54 @@ suite.each([360, 390])("missing vehicle weight at %ipx", (width) => {
   }, 90_000);
 });
 
+suite.each([360, 390])("saved analyses at %ipx", (width) => {
+  it("auto-saves, survives a reload, reopens and resets — without overflow or console errors", async () => {
+    if (!browser) throw new Error("No Edge/Chrome installation found.");
+    const { page, ctx, logs } = await newPage(width);
+    try {
+      await pick(page, "sel-year", (_t, v) => v === "2015");
+      await pick(page, "sel-make", (_t, v) => v === "Mercedes-Benz");
+      await pick(page, "sel-model", (_t, v) => v === "C300");
+      await pick(page, "sel-trim", (t) => t.startsWith("C 300 4dr Sedan") && t.includes("rear wheel drive"));
+      await page.getByRole("button", { name: "Run analysis (mobile)" }).click();
+      await page.getByRole("table", { name: "Computed performance metrics" }).waitFor({ timeout: 15_000 });
+      await page.getByText(/Saved as/).first().waitFor();
+      const newAnalysis = page.getByTestId("new-analysis").first();
+      expect(await newAnalysis.isVisible()).toBe(true);
+      await page.waitForTimeout(400); // draft autosave debounce
+
+      await page.reload(); // same browser profile → same IndexedDB
+      await page.getByRole("button", { name: "Continue last session" }).waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await shot(page, `${width}-draft-offer`);
+      await page.getByRole("button", { name: "Start fresh" }).click();
+      await page.getByRole("tab", { name: /Saved/ }).click();
+      const row = page.getByTestId("saved-row").first();
+      await row.waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await shot(page, `${width}-saved`, true);
+
+      await row.getByRole("button", { name: /^Rename / }).click();
+      await page.getByRole("dialog", { name: "Rename analysis" }).waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+      await page.keyboard.press("Escape");
+
+      await row.getByRole("button", { name: /^Open / }).click();
+      await page.getByRole("table", { name: "Computed performance metrics" }).waitFor({ timeout: 15_000 });
+      await page.getByText(/Saved snapshot from/).waitFor();
+      expect(await overflow(page)).toBeLessThanOrEqual(0);
+
+      await page.getByTestId("new-analysis").first().click();
+      await page.getByText("Start by choosing a vehicle").waitFor();
+      await page.getByRole("tab", { name: /Saved/ }).click();
+      expect(await page.getByTestId("saved-row").count()).toBe(1); // history kept after reset
+      expect(logs.filter((l) => !/favicon/i.test(l))).toEqual([]);
+    } finally {
+      await ctx.close();
+    }
+  }, 90_000);
+});
+
 suite("loader motion", () => {
   it("ring rotates normally and stays still with reduced motion", async () => {
     if (!browser) throw new Error("No Edge/Chrome installation found.");

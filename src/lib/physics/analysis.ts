@@ -18,7 +18,8 @@ import { sampleCurve, type CurvePoint } from "@/lib/physics/curve";
 import { resolveInputs, type EstimateNote, type ResolvedInputs } from "@/lib/physics/resolve";
 import { simulateRun, type RunMetrics, type Sample } from "@/lib/physics/simulate";
 
-export const ENGINE_VERSION = "autodyn-physics/2.0.0";
+// 2.1.0: threshold crossings interpolated within the integration step; sensitivity direction labels.
+export const ENGINE_VERSION = "autodyn-physics/2.1.0";
 
 export type DataQuality = {
   score: number;
@@ -30,11 +31,16 @@ export type SensitivityItem = {
   id: string;
   label: string;
   change: string;
-  /** Change in 0–60 time (s) when the parameter moves in the favorable / unfavorable direction. */
+  /** The two perturbations, e.g. "−10% curb mass" (usually helps) and "+10% curb mass". */
+  favorableLabel: string;
+  unfavorableLabel: string;
+  /** Change in 0–60 time (s) for the usually-favorable / usually-unfavorable direction. */
   favorable060: number | null;
   unfavorable060: number | null;
   favorableEt: number | null;
   unfavorableEt: number | null;
+  /** Deterministic explanation when the effect is negligible or opposite to the usual direction. */
+  note: string | null;
 };
 
 export type SweepPoint = { deltaPct: number; massKg: number; zeroTo60S: number | null; quarterMileS: number | null };
@@ -174,20 +180,55 @@ function uncertaintyPerturbation(map: Partial<Record<SpecKey, Provenance>>): Per
   };
 }
 
-const SENSITIVITY: { id: string; label: string; change: string; apply: Perturb }[] = [
-  { id: "output", label: "Engine output", change: "±10% power and torque", apply: (i, s) => scaleCurve(i, 1 + 0.1 * s, 1 + 0.1 * s) },
-  { id: "mass", label: "Vehicle mass", change: "∓10% curb mass", apply: (i, s) => withMass(i, i.curbMassKg * (1 - 0.1 * s)) },
-  { id: "grip", label: "Tire friction", change: "±10% μ", apply: (i, s) => ({ ...i, tireMu: i.tireMu * (1 + 0.1 * s) }) },
-  { id: "drag", label: "Aerodynamic drag", change: "∓10% Cd·A", apply: (i, s) => ({ ...i, dragCoefficient: i.dragCoefficient * (1 - 0.1 * s) }) },
+type SensitivityDef = { id: string; label: string; change: string; plus: string; minus: string; apply: Perturb };
+
+const SENSITIVITY: SensitivityDef[] = [
+  { id: "output", label: "Engine output", change: "±10% power and torque", plus: "+10% power and torque", minus: "−10% power and torque", apply: (i, s) => scaleCurve(i, 1 + 0.1 * s, 1 + 0.1 * s) },
+  { id: "mass", label: "Vehicle mass", change: "∓10% curb mass", plus: "−10% curb mass", minus: "+10% curb mass", apply: (i, s) => withMass(i, i.curbMassKg * (1 - 0.1 * s)) },
+  { id: "grip", label: "Tire friction", change: "±10% μ", plus: "+10% tire μ", minus: "−10% tire μ", apply: (i, s) => ({ ...i, tireMu: i.tireMu * (1 + 0.1 * s) }) },
+  { id: "drag", label: "Aerodynamic drag", change: "∓10% Cd·A", plus: "−10% Cd·A", minus: "+10% Cd·A", apply: (i, s) => ({ ...i, dragCoefficient: i.dragCoefficient * (1 - 0.1 * s) }) },
   {
     id: "efficiency",
     label: "Drivetrain efficiency",
     change: "±3 points",
+    plus: "+3 points efficiency",
+    minus: "−3 points efficiency",
     apply: (i, s) => ({ ...i, drivetrainEfficiency: Math.min(0.99, i.drivetrainEfficiency + 0.03 * s) }),
   },
-  { id: "gearing", label: "Final drive", change: "±10% ratio", apply: (i, s) => ({ ...i, finalDrive: i.finalDrive * (1 + 0.1 * s) }) },
-  { id: "shift", label: "Shift time", change: "∓50%", apply: (i, s) => ({ ...i, shiftTimeS: i.shiftTimeS * (1 - 0.5 * s) }) },
+  { id: "gearing", label: "Final drive", change: "±10% ratio", plus: "+10% final drive (shorter)", minus: "−10% final drive (taller)", apply: (i, s) => ({ ...i, finalDrive: i.finalDrive * (1 + 0.1 * s) }) },
+  { id: "shift", label: "Shift time", change: "∓50%", plus: "−50% shift time", minus: "+50% shift time", apply: (i, s) => ({ ...i, shiftTimeS: i.shiftTimeS * (1 - 0.5 * s) }) },
 ];
+
+/** Effects below this (s) are reported as no measurable change. */
+const NEGLIGIBLE_S = 0.005;
+
+/**
+ * Why a sensitivity is flat or runs opposite to intuition — derived only from the simulated runs,
+ * so a zero bar is explained by the model rather than looking like a missing calculation.
+ */
+function sensitivityNote(id: string, fav: RunMetrics, unfav: RunMetrics, base: RunMetrics): string | null {
+  const d = (x: RunMetrics) => (x.zeroTo60S == null || base.zeroTo60S == null ? null : x.zeroTo60S - base.zeroTo60S);
+  const df = d(fav);
+  const du = d(unfav);
+  if (df == null || du == null) return null;
+  const share = base.tractionShareTo60 ?? 0;
+  const pct = `${Math.round(share * 100)}%`;
+  if (Math.abs(df) < NEGLIGIBLE_S && Math.abs(du) < NEGLIGIBLE_S) {
+    if ((id === "output" || id === "efficiency") && share >= 0.8)
+      return `No measurable effect: the run is traction-limited for ${pct} of 0–60 mph, so tire grip, not engine output, sets the acceleration.`;
+    if (id === "mass" && share >= 0.8)
+      return "Almost no effect: while traction-limited, available grip scales with vehicle weight, so the mass change largely cancels out (only drag and rolling resistance remain).";
+    if (id === "drag") return "Negligible: aerodynamic drag is small below 60 mph.";
+    return "No measurable effect on 0–60 mph in this model.";
+  }
+  if (df > NEGLIGIBLE_S) {
+    if (fav.shiftsTo60 > base.shiftsTo60) return "The usually helpful direction is slower here: it adds an upshift before 60 mph.";
+    if (id === "mass" && share >= 0.8) return "Lighter is not quicker here: while traction-limited, less weight also means less grip, and drag stays the same.";
+    return "The usually helpful direction is slower in this configuration.";
+  }
+  if (du < -NEGLIGIBLE_S && unfav.shiftsTo60 < base.shiftsTo60) return "The usually unfavorable direction is quicker here: it saves an upshift before 60 mph.";
+  return null;
+}
 
 const quick = (inp: ResolvedInputs, rollout: boolean, top = false) =>
   simulateRun(inp, { collectSamples: false, rollout, dt: 0.005, topSpeed: top }).metrics;
@@ -216,6 +257,9 @@ function runScenario(
       id: s.id,
       label: s.label,
       change: s.change,
+      favorableLabel: s.plus,
+      unfavorableLabel: s.minus,
+      note: sensitivityNote(s.id, up, down, base),
       favorable060: diff(up.zeroTo60S, base.zeroTo60S),
       unfavorable060: diff(down.zeroTo60S, base.zeroTo60S),
       favorableEt: diff(up.quarterMileS, base.quarterMileS),

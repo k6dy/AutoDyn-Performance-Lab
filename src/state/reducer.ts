@@ -7,10 +7,14 @@ import { setModifiedValue, setStockValue } from "@/lib/domain/scenario";
 import type { AnalysisConfig, Conditions, ConstraintKey, ScenarioId, SpecKey, SpecSet, SpecValues } from "@/lib/domain/types";
 import { DEFAULT_CONDITIONS } from "@/lib/domain/types";
 import { validateConfig } from "@/lib/domain/validation";
+import { toActive, type ActiveSaved } from "@/lib/persistence/autosave";
+import type { DraftOffer } from "@/lib/persistence/draft";
+import type { SavedAnalysis } from "@/lib/persistence/schema";
+import { fingerprint, isHistorical } from "@/lib/persistence/snapshot";
 import type { AnalysisResult } from "@/lib/physics/analysis";
 import type { UnitSystem } from "@/lib/units";
 
-export type Mode = "manual" | "assistant" | "results";
+export type Mode = "manual" | "assistant" | "results" | "saved";
 export type ResultsView = "stock" | "modified" | "compare";
 
 export type ChatMessage = {
@@ -35,18 +39,32 @@ export type ProposalState = {
   chosen: SpecSet | null;
 };
 
+export type SavedState = {
+  /** Saved analysis the workspace is linked to (re-runs update it; see persistence/autosave). */
+  active: ActiveSaved | null;
+  /** Set while the displayed result is a stored snapshot rather than computed in this session. */
+  snapshot: { id: string; engineVersion: string; createdAt: string; updatedAt: string; imported: boolean; verified: boolean | null } | null;
+  /** A historical snapshot this run recalculated; its original stays untouched unless replaced. */
+  recalculatedFrom: { id: string; title: string; engineVersion: string } | null;
+  status: "idle" | "saving" | "saved" | "error";
+  error: string | null;
+  /** Bumped whenever saved records change, so list views reload. */
+  listRevision: number;
+};
+
 export type AppState = {
   config: AnalysisConfig;
   /** Vehicle exactly as loaded from its provider; used for per-field and full resets. */
   baseline: SpecSet | null;
   revision: number;
-  result: { analysis: AnalysisResult; revision: number } | null;
+  result: { analysis: AnalysisResult; revision: number; origin: "run" | "saved" } | null;
   /** Revision a run was requested for; the provider computes it after the state commits. */
-  runRequest: { revision: number; navigate: boolean; source: "manual" | "assistant" } | null;
-  /** True when the configuration was restored from a previous browser session. */
-  restored: boolean;
-  /** Saved values that were physically invalid and were reset during restore. */
+  runRequest: { revision: number; navigate: boolean; source: "manual" | "assistant" | "recalc" } | null;
+  /** Last session's workspace, offered (not applied) on return. */
+  draftOffer: DraftOffer | null;
+  /** Saved values that were physically invalid and were reset when a session was continued. */
   restoredFixes: string[];
+  saved: SavedState;
   ui: { mode: Mode; editing: ScenarioId; view: ResultsView; units: UnitSystem; ackRevision: number | null; advancedOpen: boolean };
   chat: { messages: ChatMessage[]; proposals: Record<string, ProposalState>; pending: string | null };
 };
@@ -57,14 +75,25 @@ export const initialState: AppState = {
   revision: 0,
   result: null,
   runRequest: null,
-  restored: false,
+  draftOffer: null,
   restoredFixes: [],
+  saved: { active: null, snapshot: null, recalculatedFrom: null, status: "idle", error: null, listRevision: 0 },
   ui: { mode: "manual", editing: "stock", view: "compare", units: "imperial", ackRevision: null, advancedOpen: false },
   chat: { messages: [], proposals: {}, pending: null },
 };
 
 export type Action =
-  | { type: "hydrate"; state: Pick<AppState, "config" | "baseline" | "chat"> & { units: UnitSystem; sanitized?: string[] } }
+  | { type: "offerDraft"; draft: DraftOffer }
+  | { type: "continueDraft"; record: SavedAnalysis | null }
+  | { type: "discardDraft" }
+  | { type: "newAnalysis" }
+  | { type: "openSaved"; record: SavedAnalysis; verified: boolean | null }
+  | { type: "revertToSaved"; record: SavedAnalysis }
+  | { type: "recalculate" }
+  | { type: "recalcResolved" }
+  | { type: "saveSucceeded"; runId: string; active: ActiveSaved }
+  | { type: "saveFailed"; runId: string; message: string }
+  | { type: "savedListChanged"; renamed?: { id: string; title: string }; removed?: string[]; active?: ActiveSaved }
   | { type: "loadVehicle"; specSet: SpecSet }
   | { type: "clearVehicle" }
   | { type: "setStockValue"; key: SpecKey; value: SpecValues[SpecKey] }
@@ -72,7 +101,6 @@ export type Action =
   | { type: "resetField"; scenario: ScenarioId; key: SpecKey }
   | { type: "resetStock" }
   | { type: "resetAll" }
-  | { type: "startFresh" }
   | { type: "dismissRestored" }
   | { type: "setAdvancedOpen"; open: boolean }
   | { type: "createModified" }
@@ -84,7 +112,7 @@ export type Action =
   | { type: "setView"; view: ResultsView }
   | { type: "setUnits"; units: UnitSystem }
   | { type: "ackWarnings" }
-  | { type: "requestRun"; navigate: boolean; source?: "manual" | "assistant" }
+  | { type: "requestRun"; navigate: boolean; source?: "manual" | "assistant" | "recalc" }
   | { type: "runComplete"; analysis: AnalysisResult; revision: number }
   | { type: "runFailed" }
   | { type: "chatSend"; message: ChatMessage }
@@ -100,27 +128,112 @@ function withConfig(state: AppState, config: AnalysisConfig): AppState {
   return { ...state, config, revision: state.revision + 1 };
 }
 
+const unlinked = (saved: SavedState): SavedState => ({ ...saved, active: null, snapshot: null, recalculatedFrom: null, status: "idle", error: null });
+
+const snapshotOf = (record: SavedAnalysis, verified: boolean | null): SavedState["snapshot"] => ({
+  id: record.id,
+  engineVersion: record.engineVersion,
+  createdAt: record.createdAt,
+  updatedAt: record.updatedAt,
+  imported: record.origin === "import",
+  verified,
+});
+
+const fingerprintMatches = (config: AnalysisConfig, record: SavedAnalysis) => fingerprint(config, record.engineVersion) === record.fingerprint;
+
+/** Loads a saved record into the workspace: exact inputs plus the stored (not recomputed) results. */
+function loadRecord(state: AppState, record: SavedAnalysis, verified: boolean | null): AppState {
+  const revision = state.revision + 1;
+  return {
+    ...state,
+    config: structuredClone(record.result.config),
+    baseline: record.baseline ? structuredClone(record.baseline) : null,
+    revision,
+    result: { analysis: record.result, revision, origin: "saved" },
+    runRequest: null,
+    restoredFixes: [],
+    saved: { ...state.saved, active: toActive(record), snapshot: snapshotOf(record, verified), recalculatedFrom: null, status: "saved", error: null },
+    // Warnings were confirmed when the analysis was run; a recalculation needn't ask again.
+    ui: { ...state.ui, editing: "stock", view: record.result.modified ? "compare" : "stock", ackRevision: revision },
+  };
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
-    case "hydrate":
+    case "offerDraft":
+      return { ...state, draftOffer: action.draft };
+    case "continueDraft": {
+      const d = state.draftOffer;
+      if (!d) return state;
+      const record = action.record;
+      const matches = !!record && fingerprintMatches(d.config, record);
+      const revision = state.revision + 1;
       return {
         ...state,
-        config: action.state.config,
-        baseline: action.state.baseline,
-        chat: { ...action.state.chat, pending: null },
-        ui: { ...state.ui, units: action.state.units },
-        revision: state.revision + 1,
-        restored: !!action.state.config.stock,
-        restoredFixes: action.state.sanitized ?? [],
+        config: d.config,
+        baseline: d.baseline,
+        revision,
+        result: matches ? { analysis: record!.result, revision, origin: "saved" } : null,
+        draftOffer: null,
+        restoredFixes: d.fixes,
+        chat: { messages: d.messages, proposals: {}, pending: null },
+        saved: record
+          ? { ...state.saved, active: toActive(record), snapshot: matches ? snapshotOf(record, null) : null, recalculatedFrom: null, status: "saved", error: null }
+          : unlinked(state.saved),
+        ui: { ...state.ui, mode: state.ui.mode === "saved" ? "manual" : state.ui.mode, editing: "stock", ackRevision: matches ? revision : null },
       };
+    }
+    case "discardDraft":
+      return { ...state, draftOffer: null };
+    case "newAnalysis":
+      // Clears only the active workspace: saved analyses and the unit preference are kept.
+      return {
+        ...initialState,
+        revision: state.revision + 1,
+        saved: { ...unlinked(state.saved), listRevision: state.saved.listRevision },
+        ui: { ...initialState.ui, units: state.ui.units },
+      };
+    case "openSaved": {
+      const next = loadRecord(state, action.record, action.verified);
+      return { ...next, draftOffer: null, chat: { messages: [], proposals: {}, pending: null }, ui: { ...next.ui, mode: "results" } };
+    }
+    case "revertToSaved":
+      if (state.saved.active?.id !== action.record.id) return state;
+      return loadRecord(state, action.record, state.saved.snapshot?.verified ?? null);
+    case "recalculate": {
+      if (!state.config.stock || validateConfig(state.config).errors) return state;
+      const a = state.saved.active;
+      return {
+        ...state,
+        runRequest: { revision: state.revision, navigate: true, source: "recalc" },
+        saved: { ...state.saved, recalculatedFrom: a && isHistorical(a) ? { id: a.id, title: a.title, engineVersion: a.engineVersion } : null },
+      };
+    }
+    case "recalcResolved":
+      return { ...state, saved: { ...state.saved, recalculatedFrom: null } };
+    case "saveSucceeded":
+      if (state.result?.analysis.id !== action.runId) return { ...state, saved: { ...state.saved, listRevision: state.saved.listRevision + 1 } };
+      return { ...state, saved: { ...state.saved, active: action.active, status: "saved", error: null, listRevision: state.saved.listRevision + 1 } };
+    case "saveFailed":
+      if (state.result?.analysis.id !== action.runId) return state;
+      return { ...state, saved: { ...state.saved, status: "error", error: action.message } };
+    case "savedListChanged": {
+      let saved: SavedState = { ...state.saved, listRevision: state.saved.listRevision + 1 };
+      if (action.renamed && saved.active?.id === action.renamed.id) saved = { ...saved, active: { ...saved.active, title: action.renamed.title, customTitle: true } };
+      if (action.active) saved = { ...saved, active: action.active, status: "saved", error: null };
+      if (action.removed && saved.active && action.removed.includes(saved.active.id)) saved = { ...saved, active: null, snapshot: null, status: "idle" };
+      if (action.removed && saved.recalculatedFrom && action.removed.includes(saved.recalculatedFrom.id)) saved = { ...saved, recalculatedFrom: null };
+      return { ...state, saved };
+    }
     case "loadVehicle":
       return {
         ...withConfig(state, { stock: action.specSet, modified: null, conditions: state.config.conditions, constraints: {} }),
         baseline: action.specSet,
+        saved: unlinked(state.saved),
         ui: { ...state.ui, editing: "stock" },
       };
     case "clearVehicle":
-      return { ...withConfig(state, { ...initialState.config, conditions: state.config.conditions }), baseline: null, result: null };
+      return { ...withConfig(state, { ...initialState.config, conditions: state.config.conditions }), baseline: null, result: null, saved: unlinked(state.saved) };
     case "setStockValue":
       if (!state.config.stock) return state;
       return withConfig(state, { ...state.config, stock: setStockValue(state.config.stock, action.key, action.value) });
@@ -150,10 +263,8 @@ export function reducer(state: AppState, action: Action): AppState {
         ...withConfig(state, { stock: state.baseline, modified: null, conditions: { ...DEFAULT_CONDITIONS }, constraints: {} }),
         ui: { ...state.ui, editing: "stock", ackRevision: null },
       };
-    case "startFresh":
-      return { ...initialState, revision: state.revision + 1, ui: { ...initialState.ui, units: state.ui.units } };
     case "dismissRestored":
-      return { ...state, restored: false, restoredFixes: [] };
+      return { ...state, restoredFixes: [] };
     case "setAdvancedOpen":
       return { ...state, ui: { ...state.ui, advancedOpen: action.open } };
     case "createModified":
@@ -188,7 +299,11 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, ui: { ...state.ui, ackRevision: state.revision } };
     case "requestRun":
       if (!state.config.stock || validateConfig(state.config).errors) return state;
-      return { ...state, runRequest: { revision: state.revision, navigate: action.navigate, source: action.source ?? "manual" } };
+      return {
+        ...state,
+        runRequest: { revision: state.revision, navigate: action.navigate, source: action.source ?? "manual" },
+        saved: action.source === "recalc" ? state.saved : { ...state.saved, recalculatedFrom: null },
+      };
     case "runFailed":
       return { ...state, runRequest: null };
     case "runComplete": {
@@ -212,7 +327,8 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         runRequest: null,
         chat: { ...state.chat, messages },
-        result: { analysis: action.analysis, revision: action.revision },
+        result: { analysis: action.analysis, revision: action.revision, origin: "run" },
+        saved: { ...state.saved, snapshot: null, status: "saving", error: null },
         ui: {
           ...state.ui,
           mode: state.runRequest?.navigate ? "results" : state.ui.mode,
@@ -259,6 +375,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...withConfig(state, action.config),
         baseline: action.baseline ?? state.baseline,
+        saved: action.baseline ? unlinked(state.saved) : state.saved,
         ui: { ...state.ui, view: action.view ?? state.ui.view, editing: action.config.modified ? state.ui.editing : "stock" },
         chat: { ...state.chat, proposals: { ...state.chat.proposals, [action.proposalId]: { ...p, status: "applied" } } },
       };

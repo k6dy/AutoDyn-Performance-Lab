@@ -7,6 +7,8 @@ import AdvancedSettings, { BASIC_KEYS } from "@/components/manual/AdvancedSettin
 import { ConditionsSummary, KeySpecs, ScenarioSetup } from "@/components/manual/BasicSetup";
 import VehicleSelector from "@/components/manual/VehicleSelector";
 import { Button, cx, Notice, Panel, Spinner } from "@/components/ui";
+import { NewAnalysisButton, RestoredFixes } from "@/components/Workspace";
+import { isHistorical } from "@/lib/persistence/snapshot";
 import { NUMERIC_FIELDS, SPEC_LABEL } from "@/lib/domain/fields";
 import { effectiveValues, sameValue } from "@/lib/domain/scenario";
 import { DEFAULT_CONDITIONS, type Conditions, type NumericSpecKey, type SpecKey } from "@/lib/domain/types";
@@ -241,11 +243,36 @@ function MobileRunBar() {
   );
 }
 
+/** Which saved analysis this workspace updates, plus the New Analysis action. */
+function WorkspaceBar() {
+  const { state } = useApp();
+  const active = state.saved.active;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <p className="min-w-0 text-xs leading-5 text-faint">
+        {active ? (
+          isHistorical(active) ? (
+            <>Based on the historical snapshot “{active.title}”. Running saves a new analysis; the original stays unchanged.</>
+          ) : (
+            <>
+              Saved as <span className="text-muted">“{active.title}”</span>. Re-running updates it — use Duplicate in Saved Analyses to keep the original.
+            </>
+          )
+        ) : (
+          "Each completed run is saved automatically to Saved Analyses."
+        )}
+      </p>
+      <NewAnalysisButton />
+    </div>
+  );
+}
+
 export default function ManualSetup() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, saved } = useApp();
   const v = useValidation();
   const stock = state.config.stock;
   const [confirmReset, setConfirmReset] = useState(false);
+  const revert = !!state.saved.active && saved.unsavedEdits;
 
   const assumptions = useMemo(() => {
     if (!stock) return 0;
@@ -257,28 +284,8 @@ export default function ManualSetup() {
     <div className={cx("grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]", stock && "pb-24 lg:pb-0")}>
       {stock && <MobileRunBar />}
       <div className="min-w-0 space-y-4">
-        {state.restored && stock && (
-          <Notice
-            action={
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => dispatch({ type: "startFresh" })}>
-                  Start fresh
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => dispatch({ type: "dismissRestored" })}>
-                  Keep
-                </Button>
-              </div>
-            }
-          >
-            Restored your previous session from this browser, including any values you edited.
-            {state.restoredFixes.length > 0 && (
-              <span className="mt-1 block text-warning">
-                {state.restoredFixes.length} saved value{state.restoredFixes.length > 1 ? "s were" : " was"} physically invalid and reset to the source data:{" "}
-                {state.restoredFixes.join(", ")}.
-              </span>
-            )}
-          </Notice>
-        )}
+        {(stock || state.result) && <WorkspaceBar />}
+        <RestoredFixes />
 
         <Panel
           title="Vehicle"
@@ -299,8 +306,16 @@ export default function ManualSetup() {
                   tone="warning"
                   action={
                     <div className="flex gap-2">
-                      <Button size="sm" variant="danger" onClick={() => (dispatch({ type: "resetAll" }), setConfirmReset(false))}>
-                        Reset
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => {
+                          if (revert) void saved.revertToSaved();
+                          else dispatch({ type: "resetAll" });
+                          setConfirmReset(false);
+                        }}
+                      >
+                        {revert ? "Revert" : "Reset"}
                       </Button>
                       <Button size="sm" variant="ghost" onClick={() => setConfirmReset(false)}>
                         Cancel
@@ -308,11 +323,13 @@ export default function ManualSetup() {
                     </div>
                   }
                 >
-                  Reset to the vehicle&apos;s source data, remove the modified scenario and restore standard conditions?
+                  {revert
+                    ? `Discard changes made since “${state.saved.active!.title}” was saved and restore its saved inputs?`
+                    : "Reset to the vehicle's source data, remove the modified scenario and restore standard conditions?"}
                 </Notice>
               ) : (
                 <Button size="sm" variant="ghost" onClick={() => setConfirmReset(true)}>
-                  <RotateCcw size={14} aria-hidden /> Reset configuration
+                  <RotateCcw size={14} aria-hidden /> Reset changes
                 </Button>
               )}
             </div>

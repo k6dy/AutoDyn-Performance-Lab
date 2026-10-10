@@ -8,7 +8,8 @@
 //  • Inertia      effective mass m·(1.04 + k·(overall ratio)²) for rotating parts.
 //  • Shifting     optimal-force upshifts (or at redline) with zero drive force during shift time.
 //  • Launch       clutch slip at launch rpm; torque-converter multiplication for automatics/CVTs.
-//  • Integration  semi-implicit Euler, fixed time step.
+//  • Integration  semi-implicit Euler, fixed time step. Threshold crossings (60 mph, ¼ mile,
+//                 rollout) are interpolated within the step so results don't jump in dt increments.
 
 import { torqueAt } from "@/lib/physics/curve";
 import type { ResolvedInputs } from "@/lib/physics/resolve";
@@ -214,27 +215,33 @@ export function simulateRun(inp: ResolvedInputs, opts: Options = {}): RunResult 
     let a = (drive - resist) / mEff;
     if (v <= 0 && a < 0) a = 0;
     const vStep = v;
+    const xStep = x;
     v = Math.max(0, v + a * dt);
     x += v * dt;
     t += dt;
     if (shiftTimer > 0) shiftTimer -= dt;
 
+    // Time at which a quantity rising from `prev` to `cur` during this step reached `target`.
+    const at = (prev: number, cur: number, target: number) => (cur > prev ? t - dt * ((cur - target) / (cur - prev)) : t);
+
     peakA = Math.max(peakA, a);
     if (m.zeroTo60S === null && limit === "traction") tractionTime += dt;
-    if (rolloutTime === null && x >= M_PER_FT) rolloutTime = t;
+    if (rolloutTime === null && x >= M_PER_FT) rolloutTime = at(xStep, x, M_PER_FT);
 
     if (m.zeroTo60S === null && v >= v60) {
-      m.zeroTo60S = t - (rolloutTime ?? 0);
+      const t60 = at(vStep, v, v60);
+      m.zeroTo60S = t60 - (rolloutTime ?? 0);
       m.shiftsTo60 = shifts - (pendingGear >= 0 ? 1 : 0);
-      m.tractionShareTo60 = tractionTime / t;
+      m.tractionShareTo60 = Math.min(1, tractionTime / t60);
     }
-    if (m.zeroTo100KphS === null && v >= v100k) m.zeroTo100KphS = t;
-    if (m.zeroTo100MphS === null && v >= v100m) m.zeroTo100MphS = t;
-    if (t50 === null && v >= v50) t50 = t;
-    if (m.fiftyToSeventyS === null && t50 !== null && v >= v70) m.fiftyToSeventyS = t - t50;
+    if (m.zeroTo100KphS === null && v >= v100k) m.zeroTo100KphS = at(vStep, v, v100k);
+    if (m.zeroTo100MphS === null && v >= v100m) m.zeroTo100MphS = at(vStep, v, v100m);
+    if (t50 === null && v >= v50) t50 = at(vStep, v, v50);
+    if (m.fiftyToSeventyS === null && t50 !== null && v >= v70) m.fiftyToSeventyS = at(vStep, v, v70) - t50;
     if (m.quarterMileS === null && x >= QUARTER_MILE_M) {
-      m.quarterMileS = t;
-      m.quarterMileTrapMs = v;
+      const tq = at(xStep, x, QUARTER_MILE_M);
+      m.quarterMileS = tq;
+      m.quarterMileTrapMs = vStep + ((v - vStep) * (tq - (t - dt))) / dt;
     }
 
     if (collect && t >= nextSample) {

@@ -50,8 +50,23 @@ export function aiConfig() {
       rawModel && !normalizeModel(rawModel) ? `GEMINI_MODEL value is not a valid model id; using ${DEFAULT_GEMINI_MODEL}.` : null,
       rawModel && normalizeModel(rawModel) && normalizeModel(rawModel) !== rawModel ? `GEMINI_MODEL normalized to “${normalizeModel(rawModel)}”.` : null,
       !rawModel ? `GEMINI_MODEL not set; using default ${DEFAULT_GEMINI_MODEL}.` : null,
+      ...misnamedKeyNotes(!!apiKey),
     ].filter((x): x is string => !!x),
+    env: { GEMINI_API_KEY: !!apiKey, GEMINI_MODEL: !!normalizeModel(rawModel) },
   };
+}
+
+/** Variables people commonly set instead of GEMINI_API_KEY (names only; values are never read out). */
+const ALTERNATE_KEY_NAMES = ["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_KEY", "GOOGLE_GEMINI_API_KEY", "GEMINI_API_TOKEN", "NEXT_PUBLIC_GEMINI_API_KEY"];
+
+function misnamedKeyNotes(hasKey: boolean): string[] {
+  return ALTERNATE_KEY_NAMES.filter((n) => !!process.env[n]?.trim()).map((n) =>
+    n.startsWith("NEXT_PUBLIC_")
+      ? `${n} is set: NEXT_PUBLIC_ variables are bundled into the browser. Remove it and rotate that key; AutoDyn reads GEMINI_API_KEY on the server only.`
+      : hasKey
+        ? `${n} is also set but unused; AutoDyn reads GEMINI_API_KEY.`
+        : `${n} is set, but AutoDyn reads GEMINI_API_KEY. Rename the variable in the hosting settings and redeploy.`,
+  );
 }
 
 /** Deployment identity (Vercel system env vars) so a Preview can be matched to project and branch. */
@@ -61,6 +76,7 @@ export function deploymentInfo() {
     branch: process.env.VERCEL_GIT_COMMIT_REF ?? null,
     commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
     project: process.env.VERCEL_PROJECT_PRODUCTION_URL ?? null,
+    url: process.env.VERCEL_URL ?? null,
   };
 }
 
@@ -221,6 +237,51 @@ export async function probeProvider(caller: ModelCaller = geminiCaller, opts: { 
   return probeInFlight;
 }
 
+export type ModelGetter = (key: string, model: string, signal: AbortSignal) => Promise<unknown>;
+
+const defaultGetter: ModelGetter = (key, model, signal) => getClient(key).models.get({ model, config: { abortSignal: signal, httpOptions: { timeout: 8000 } } });
+
+let accessHealth: ProviderHealth | null = null;
+
+/**
+ * Public readiness check that consumes no generation quota: fetches the configured model's
+ * metadata, which proves the key is accepted and the model is visible to the API project.
+ * Cached per server instance (10 min success / 2 min failure).
+ */
+export async function verifyAccess(getter: ModelGetter = defaultGetter, now = Date.now()): Promise<ProviderHealth> {
+  const cfg = aiConfig();
+  if (!cfg.apiKey) return { status: "not_configured", model: cfg.model, checkedAt: new Date(now).toISOString(), latencyMs: null, source: "access" };
+  if (accessHealth && accessHealth.model === cfg.model) {
+    const age = now - Date.parse(accessHealth.checkedAt);
+    if (age < (accessHealth.status === "ok" ? PROBE_OK_TTL : PROBE_FAIL_TTL)) return accessHealth;
+  }
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 9000);
+  let result: ModelCallResult;
+  try {
+    await getter(cfg.apiKey, cfg.model, controller.signal);
+    result = { ok: true, text: "", model: cfg.model };
+  } catch (err) {
+    const c = classifyProviderError(err, controller.signal.aborted, cfg.apiKey);
+    result = { ok: false, code: c.code, status: c.status, reason: c.reason };
+    console.error(`[assistant] access_check ${JSON.stringify({ code: c.code, status: c.status, reason: c.reason, model: cfg.model })}`);
+  } finally {
+    clearTimeout(timer);
+  }
+  accessHealth = {
+    status: result.ok ? "ok" : result.code,
+    model: cfg.model,
+    httpStatus: result.ok ? undefined : result.status,
+    reason: result.ok ? undefined : result.reason,
+    checkedAt: new Date(now).toISOString(),
+    latencyMs: Date.now() - started,
+    source: "access",
+  };
+  // A real assistant result (if any) is more informative than metadata; keep it when it is newer.
+  return health && Date.parse(health.checkedAt) > Date.parse(accessHealth.checkedAt) ? health : accessHealth;
+}
+
 /** Token-protected deep diagnostic: is the configured model visible to this API project? */
 export async function modelVisibility(): Promise<{ configured: string; available: boolean | null; flashLiteModels: string[]; error?: string }> {
   const cfg = aiConfig();
@@ -246,5 +307,6 @@ export async function modelVisibility(): Promise<{ configured: string; available
 /** Test hook. */
 export function resetProviderHealth() {
   health = null;
+  accessHealth = null;
   probeInFlight = null;
 }

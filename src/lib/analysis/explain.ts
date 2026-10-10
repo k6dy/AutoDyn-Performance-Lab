@@ -58,6 +58,18 @@ export function scenarioFindings(r: ScenarioResult, label: string): Finding[] {
     });
   }
 
+  // A flat engine-output sensitivity is a model result, not a missing calculation: say why.
+  const output = r.sensitivity.find((x) => x.id === "output");
+  if (output?.favorable060 != null && Math.abs(output.favorable060) < 0.005 && (m.tractionShareTo60 ?? 0) >= 0.8) {
+    const etFlat = output.favorableEt != null && Math.abs(output.favorableEt) < 0.005;
+    out.push({
+      id: id("power-capped"),
+      tone: "limit",
+      title: `${label}: more power would not change 0–60${etFlat ? " or the quarter mile" : ""}`,
+      detail: `+10% power and torque moves 0–60 by less than 0.01 s${etFlat ? " and the quarter mile by less than 0.01 s — the tires are the limit for the entire run" : ""}. Further gains would need more grip (tires, surface or aerodynamic downforce, which is not modeled), not more output.`,
+    });
+  }
+
   const dragShare = dragShareAtTrap(r);
   if (dragShare && dragShare > 0.4) {
     out.push({

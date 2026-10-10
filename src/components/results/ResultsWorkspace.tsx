@@ -1,37 +1,30 @@
 "use client";
 
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Download, FileJson, Info, Printer, RefreshCw, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, Download, FileJson, History, Info, Pencil, Printer, RefreshCw, Save, ShieldCheck, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ScenarioTag } from "@/components/ui";
+import { PromptDialog } from "@/components/Dialog";
 import LoadingStage from "@/components/LoadingStage";
+import { NewAnalysisButton, SaveIndicator } from "@/components/Workspace";
 import FeasibilityPanel from "@/components/results/FeasibilityPanel";
 import { AccelChart, CurveChart, MassSweepChart, SensitivityChart, SpeedTimeChart } from "@/components/results/Charts";
 import { AnimatedNumber, Button, cx, Notice, Panel, ProvenanceTag, Segmented, Spinner } from "@/components/ui";
 import { explainAnalysis, type Finding } from "@/lib/analysis/explain";
 import { buildCsvReport, buildJsonReport, buildTraceCsv } from "@/lib/analysis/export";
+import { download } from "@/lib/download";
 import { metricRows, rowDelta, type MetricRow } from "@/lib/analysis/metrics";
 import { NUMERIC_FIELDS, SPEC_LABEL } from "@/lib/domain/fields";
 import { effectiveValues } from "@/lib/domain/scenario";
 import type { NumericSpecKey, Provenance, SpecKey } from "@/lib/domain/types";
 import { SPEC_KEYS } from "@/lib/domain/types";
-import type { AnalysisResult, ScenarioResult } from "@/lib/physics/analysis";
+import { getRepository, toStorageError } from "@/lib/persistence/repository";
+import { isHistorical } from "@/lib/persistence/snapshot";
+import { ENGINE_VERSION, type AnalysisResult, type ScenarioResult } from "@/lib/physics/analysis";
 import { toDisplay, unitLabel, type UnitSystem } from "@/lib/units";
 import { vehicleLabel } from "@/lib/vehicles/normalize";
 import { useApp } from "@/state/AppProvider";
 import type { ResultsView } from "@/state/reducer";
-
-function download(name: string, content: string, type: string) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
 
 const fileBase = (r: AnalysisResult) =>
   `autodyn-${vehicleLabel(r.identity).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60)}-${r.createdAt.slice(0, 10)}`;
@@ -229,8 +222,79 @@ function InputsTable({ result, units }: { result: AnalysisResult; units: UnitSys
   );
 }
 
+const engineLabel = (v: string) => v.replace(/^autodyn-physics\//, "v");
+
+/** Historical / imported snapshot and recalculation status for the displayed result. */
+function SnapshotBanner() {
+  const { state, dispatch, saved, running } = useApp();
+  const [msg, setMsg] = useState<string | null>(null);
+  const s = state.saved;
+  const snap = state.result?.origin === "saved" ? s.snapshot : null;
+  const recalc = s.recalculatedFrom && s.active?.origin === "recalculated" && s.active.sourceId === s.recalculatedFrom.id ? s.recalculatedFrom : null;
+
+  if (recalc) {
+    return (
+      <Notice
+        tone="success"
+        action={
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              onClick={async () => {
+                const r = await saved.replaceOriginal();
+                if (!r.ok) setMsg(r.message);
+              }}
+            >
+              Replace original
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => dispatch({ type: "recalcResolved" })}>
+              Keep both
+            </Button>
+          </div>
+        }
+      >
+        Recalculated with the current engine ({engineLabel(ENGINE_VERSION)}) and saved as “{s.active!.title}”. The original {engineLabel(recalc.engineVersion)} snapshot “{recalc.title}” is unchanged.
+        {msg && <span className="mt-1 block text-error">{msg}</span>}
+      </Notice>
+    );
+  }
+  if (!snap) return null;
+  const historical = isHistorical(snap);
+  const date = new Date(snap.createdAt).toLocaleString();
+  if (historical || snap.verified === false) {
+    return (
+      <Notice
+        tone="warning"
+        action={
+          <Button size="sm" variant="primary" onClick={() => dispatch({ type: "recalculate" })} disabled={running}>
+            {running ? <Spinner /> : <RefreshCw size={14} aria-hidden />} Recalculate using current engine
+          </Button>
+        }
+      >
+        <History size={14} aria-hidden className="mr-1 inline-block align-[-2px]" />
+        {historical ? (
+          <>
+            Historical snapshot from {date}, computed with physics engine {engineLabel(snap.engineVersion)}. The current engine is {engineLabel(ENGINE_VERSION)}, so a new
+            calculation may differ. Recalculating saves a new analysis and keeps this snapshot.
+          </>
+        ) : (
+          <>These imported results don&apos;t match what the current engine computes for their inputs. Recalculate to see verified results.</>
+        )}
+      </Notice>
+    );
+  }
+  return (
+    <p className="text-xs text-faint">
+      <History size={13} aria-hidden className="mr-1 inline-block align-[-2px]" />
+      Saved snapshot from {date} — showing the stored results{snap.imported ? " (imported; checked against the current engine)" : ""}.
+    </p>
+  );
+}
+
 export default function ResultsWorkspace() {
-  const { state, dispatch, stale, running, runAnalysisNow, aiStatus, sendMessage } = useApp();
+  const { state, dispatch, stale, running, runAnalysisNow, aiStatus, sendMessage, saved } = useApp();
+  const [dialog, setDialog] = useState<"saveAs" | "rename" | null>(null);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const result = state.result?.analysis ?? null;
   const units = state.ui.units;
   const explanation = useMemo(() => (result ? explainAnalysis(result) : null), [result]);
@@ -284,6 +348,15 @@ export default function ResultsWorkspace() {
           </div>
         </div>
         <div className="no-print flex flex-wrap items-center gap-2">
+          <NewAnalysisButton />
+          <Button size="sm" variant="ghost" onClick={() => setDialog("saveAs")} disabled={stale}>
+            <Save size={14} aria-hidden /> Save as…
+          </Button>
+          {state.saved.active && (
+            <Button size="sm" variant="ghost" onClick={() => setDialog("rename")}>
+              <Pencil size={14} aria-hidden /> Rename
+            </Button>
+          )}
           <Segmented
             label="Scenarios shown"
             value={view}
@@ -296,6 +369,12 @@ export default function ResultsWorkspace() {
           />
         </div>
       </div>
+
+      <div className="no-print -mt-2 flex min-h-5 flex-wrap items-center gap-2 text-[12.5px]">
+        <SaveIndicator />
+        {saveMsg && <span className="text-muted">{saveMsg}</span>}
+      </div>
+      <SnapshotBanner />
 
       {stale && (
         <Notice
@@ -385,6 +464,41 @@ export default function ResultsWorkspace() {
           <Printer size={14} aria-hidden /> Print report
         </Button>
       </div>
+
+      <PromptDialog
+        open={dialog === "saveAs"}
+        title="Save as a new analysis"
+        description="Keeps a separately named copy of these results in Saved Analyses. Later runs update the new copy."
+        label="Title"
+        initial={state.saved.active ? `${state.saved.active.title} (copy)` : vehicleLabel(result.identity)}
+        confirmLabel="Save"
+        onSubmit={async (title) => {
+          setDialog(null);
+          const r = await saved.saveAs(title);
+          setSaveMsg(r.ok ? `Saved “${title}”.` : r.message);
+        }}
+        onCancel={() => setDialog(null)}
+      />
+      <PromptDialog
+        open={dialog === "rename"}
+        title="Rename analysis"
+        label="Title"
+        initial={state.saved.active?.title ?? ""}
+        confirmLabel="Rename"
+        onSubmit={async (title) => {
+          setDialog(null);
+          const id = state.saved.active?.id;
+          if (!id) return;
+          try {
+            await getRepository().updateMeta(id, { title, customTitle: true });
+            dispatch({ type: "savedListChanged", renamed: { id, title } });
+            setSaveMsg(null);
+          } catch (e) {
+            setSaveMsg(toStorageError(e).message);
+          }
+        }}
+        onCancel={() => setDialog(null)}
+      />
     </div>
   );
 }

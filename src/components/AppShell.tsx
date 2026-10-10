@@ -1,9 +1,11 @@
 "use client";
 
-import { Gauge, SlidersHorizontal, Sparkles } from "lucide-react";
+import { Archive, Gauge, SlidersHorizontal, Sparkles } from "lucide-react";
 import dynamic from "next/dynamic";
 import AssistantWorkspace from "@/components/assistant/AssistantWorkspace";
 import ManualSetup from "@/components/manual/ManualSetup";
+import SavedAnalyses from "@/components/saved/SavedAnalyses";
+import { DraftOffer, SaveIndicator } from "@/components/Workspace";
 import { cx, ProvenanceTag, Segmented, Spinner } from "@/components/ui";
 import { modifiedDiff } from "@/lib/domain/scenario";
 import { vehicleLabel } from "@/lib/vehicles/normalize";
@@ -23,6 +25,7 @@ const MODES: { id: Mode; label: string; short: string; description: string; icon
   { id: "manual", label: "Manual Setup", short: "Manual", description: "Choose a vehicle, adjust its specifications, and run your own analysis.", icon: SlidersHorizontal },
   { id: "assistant", label: "AI Build Assistant", short: "Assistant", description: "Describe a vehicle or build and let AutoDyn help configure the analysis.", icon: Sparkles },
   { id: "results", label: "Results", short: "Results", description: "Shared engineering analysis for both setup modes.", icon: Gauge },
+  { id: "saved", label: "Saved Analyses", short: "Saved", description: "Completed analyses stored in this browser.", icon: Archive },
 ];
 
 function ResultStatus() {
@@ -62,6 +65,11 @@ function VehicleStrip() {
             <span className="text-warning">Inputs changed since the last analysis</span>
           </>
         )}
+        {state.result && (
+          <span className="flex min-w-0 items-center gap-2 text-[12.5px] sm:ml-auto">
+            <SaveIndicator />
+          </span>
+        )}
       </div>
     </div>
   );
@@ -95,7 +103,7 @@ export default function AppShell() {
         <nav aria-label="Workspace" className="mx-auto mt-2 max-w-[1400px] px-2 sm:px-4">
           <div
             role="tablist"
-            className="grid grid-cols-3 sm:flex sm:gap-1"
+            className="grid grid-cols-4 sm:flex sm:gap-1"
             onKeyDown={(e) => {
               if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
               const i = MODES.findIndex((m) => m.id === mode);
@@ -119,11 +127,11 @@ export default function AppShell() {
                   onClick={() => dispatch({ type: "setMode", mode: m.id })}
                   title={m.description}
                   className={cx(
-                    "group relative flex min-w-0 items-center justify-center gap-2 px-2 pt-2 pb-2.5 text-[13px] font-medium transition-colors sm:justify-start sm:px-3 sm:text-sm",
+                    "group relative flex min-w-0 items-center justify-center gap-1.5 px-1 pt-2 pb-2.5 text-[13px] font-medium transition-colors sm:justify-start sm:gap-2 sm:px-3 sm:text-sm",
                     active ? "text-ink" : "text-muted hover:text-ink",
                   )}
                 >
-                  <Icon size={16} strokeWidth={1.75} className={active ? "text-accent" : "text-faint group-hover:text-muted"} aria-hidden />
+                  <Icon size={16} strokeWidth={1.75} className={cx("hidden shrink-0 min-[400px]:block", active ? "text-accent" : "text-faint group-hover:text-muted")} aria-hidden />
                   <span className="truncate sm:hidden">{m.short}</span>
                   <span className="hidden sm:inline">{m.label}</span>
                   {m.id === "results" && (
@@ -145,14 +153,16 @@ export default function AppShell() {
         </nav>
       </header>
       <VehicleStrip />
+      <DraftOffer />
       <main id="workspace" className="mx-auto max-w-[1400px] px-4 py-5 sm:px-6 sm:py-6">
-        {mode !== "results" && (
+        {mode !== "results" && mode !== "saved" && (
           <p className="no-print mb-4 max-w-2xl text-[13px] leading-5 text-muted">{MODES.find((m) => m.id === mode)?.description}</p>
         )}
         <div key={mode} role="tabpanel" aria-label={MODES.find((m) => m.id === mode)?.label} className="animate-enter">
           {mode === "manual" && <ManualSetup />}
           {mode === "assistant" && <AssistantWorkspace />}
           {mode === "results" && <ResultsWorkspace />}
+          {mode === "saved" && <SavedAnalyses />}
         </div>
       </main>
       <footer className="no-print mx-auto max-w-[1400px] px-4 pb-8 text-xs leading-5 text-faint sm:px-6">
